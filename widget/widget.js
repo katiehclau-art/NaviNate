@@ -153,7 +153,10 @@
     panel.innerHTML = `
       <div class="nn-header">
         <span class="nn-title">${escapeHtml(theme.launcherIcon || "🧭")} ${escapeHtml(theme.botName)}</span>
-        <button class="nn-min" title="Minimize" aria-label="Minimize">–</button>
+        <div class="nn-header-actions">
+          <button class="nn-reset" title="Reset chat" aria-label="Reset chat">↺</button>
+          <button class="nn-min" title="Minimize" aria-label="Minimize">–</button>
+        </div>
       </div>
       <div class="nn-log"></div>
       <div class="nn-status"></div>
@@ -173,6 +176,7 @@
     suggestionsEl = panel.querySelector(".nn-suggestions");
     panel.querySelector(".nn-min").onclick = closePanel;
     undoBtn.onclick = undoLastCommand;
+    panel.querySelector(".nn-reset").onclick = resetChat;
 
     sendBtn.onclick = () => submit();
     input.addEventListener("keydown", (e) => {
@@ -188,15 +192,21 @@
     // Apply theme accent
     root.style.setProperty("--nn-accent", theme.primaryColor);
 
-    // Restore prior conversation + open state
-    for (const m of state.history) addBubble(m.role, m.content, false);
-    if (state.open) openPanel();
-    else if (state.history.length === 0) {
-      // First-ever load: greet.
-      addBubble("assistant", theme.welcomeMessage);
-      state.history.push({ role: "assistant", content: theme.welcomeMessage });
+    // Show the conversation. The greeting reflects the CURRENT welcome message
+    // (which the client can change in Base44), so we NEVER persist it into history —
+    // otherwise the first-ever greeting would get stuck in sessionStorage and later
+    // changes to welcome_message would never show. We render it fresh, from the live
+    // theme, whenever the conversation hasn't actually started yet.
+    const conversationStarted = state.history.some((m) => m.role === "user");
+    if (!conversationStarted && state.history.length) {
+      state.history = []; // drop any stale stored greeting from an earlier load/version
       persist();
     }
+    for (const m of state.history) addBubble(m.role, m.content, false);
+    if (!conversationStarted && theme.welcomeMessage) {
+      addBubble("assistant", theme.welcomeMessage); // ephemeral — not pushed to history
+    }
+    if (state.open) openPanel();
     renderSuggestions();
     renderUndo();
   }
@@ -245,6 +255,28 @@
     panel.classList.remove("nn-open");
     launcher.classList.remove("nn-hidden");
     persist();
+  }
+
+  // Wipe the conversation and start over: clears history + all in-flight/loop-guard
+  // state, re-renders the log with a fresh welcome message, and re-shows the starter
+  // chips. Doesn't touch visitorId/sessionId — this is a chat reset, not a new session.
+  function resetChat() {
+    if (busy) return; // don't yank the log out from under an in-flight turn
+    state.history = [];
+    state.autoSteps = 0;
+    state.recentSigs = [];
+    state.repeatStrikes = 0;
+    exitActingMode();
+    disarmContinuation();
+    ["autoSteps", "recentSigs", "continue", "navNotice", "acting", "history"].forEach((k) =>
+      SS.removeItem("navinate." + k)
+    );
+    persist();
+    log.innerHTML = "";
+    setStatus("");
+    if (theme.welcomeMessage) addBubble("assistant", theme.welcomeMessage);
+    renderSuggestions();
+    track("chat_reset");
   }
 
   // ---- "acting" mode: get out of the way while the agent drives the page ----
@@ -1127,8 +1159,11 @@
       display: flex; align-items: center; justify-content: space-between;
     }
     .nn-title { font-weight: 600; font-size: 15px; }
-    .nn-min { background: transparent; border: none; color: #fff; font-size: 24px; cursor: pointer; line-height: 1; padding: 0 6px; border-radius: 6px; }
-    .nn-min:hover { background: rgba(255,255,255,.15); }
+    .nn-header-actions { display: flex; align-items: center; gap: 2px; }
+    .nn-min, .nn-reset { background: transparent; border: none; color: #fff; cursor: pointer; line-height: 1; padding: 0 6px; border-radius: 6px; }
+    .nn-min { font-size: 24px; }
+    .nn-reset { font-size: 17px; padding: 4px 7px; }
+    .nn-min:hover, .nn-reset:hover { background: rgba(255,255,255,.15); }
 
     .nn-log { flex: 1; overflow-y: auto; padding: 16px; background: #f7f7fb; display: flex; flex-direction: column; gap: 10px; }
     .nn-msg { max-width: 84%; padding: 10px 13px; border-radius: 14px; font-size: 14px; line-height: 1.45; white-space: pre-wrap; word-wrap: break-word; animation: nn-in .18s ease; }
