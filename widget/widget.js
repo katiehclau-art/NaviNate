@@ -51,6 +51,8 @@
     // True while the agent is actively driving the page. We minimize the window
     // during this so the user can watch the cursor, then pop it back open to answer.
     acting: SS.getItem("navinate.acting") === "1",
+    undoDraft: JSON.parse(SS.getItem("navinate.undoDraft") || "null"),
+    lastUndo: JSON.parse(SS.getItem("navinate.lastUndo") || "null"),
   };
   let MAX_AUTO_STEPS = 8; // safety cap on agent-driven steps per goal (overridable via config)
   const RECENT_SIGS_MAX = 5; // how many past actions the loop guard remembers
@@ -60,6 +62,12 @@
     SS.setItem("navinate.open", state.open ? "1" : "0");
     SS.setItem("navinate.autoSteps", String(state.autoSteps));
     SS.setItem("navinate.recentSigs", JSON.stringify(state.recentSigs));
+    state.undoDraft
+      ? SS.setItem("navinate.undoDraft", JSON.stringify(state.undoDraft))
+      : SS.removeItem("navinate.undoDraft");
+    state.lastUndo
+      ? SS.setItem("navinate.lastUndo", JSON.stringify(state.lastUndo))
+      : SS.removeItem("navinate.lastUndo");
   }
 
   // Client-configurable theme/behavior (fetched from the backend /config, which
@@ -113,7 +121,7 @@
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   // ---- build the UI --------------------------------------------------------
-  let root, panel, log, input, sendBtn, launcher, cursor, cursorCaption, statusEl, suggestionsEl;
+  let root, panel, log, input, sendBtn, launcher, cursor, cursorCaption, statusEl, suggestionsEl, undoBtn;
 
   function buildUI() {
     root = el("div", { id: "navinate-root" });
@@ -145,6 +153,7 @@
       </div>
       <div class="nn-log"></div>
       <div class="nn-status"></div>
+      <div class="nn-undo-row"><button class="nn-undo" type="button">↶ Undo last command</button></div>
       <div class="nn-suggestions"></div>
       <div class="nn-inputbar">
         <input class="nn-input" type="text" placeholder="Ask me to find or do something…" />
@@ -156,8 +165,10 @@
     input = panel.querySelector(".nn-input");
     sendBtn = panel.querySelector(".nn-send");
     statusEl = panel.querySelector(".nn-status");
+    undoBtn = panel.querySelector(".nn-undo");
     suggestionsEl = panel.querySelector(".nn-suggestions");
     panel.querySelector(".nn-min").onclick = closePanel;
+    undoBtn.onclick = undoLastCommand;
 
     sendBtn.onclick = () => submit();
     input.addEventListener("keydown", (e) => {
@@ -183,6 +194,7 @@
       persist();
     }
     renderSuggestions();
+    renderUndo();
   }
 
   // Client-configured starter chips. Shown until the visitor sends their first
@@ -468,7 +480,16 @@
     state.autoSteps = 0; // new user goal resets the step budget
     state.recentSigs = []; // ...and the loop guard, so a fresh goal may repeat a prior action
     state.repeatStrikes = 0;
+    state.lastUndo = null;
+    state.undoDraft = {
+      command: text,
+      startUrl: window.location.href,
+      scrollX: window.scrollX,
+      scrollY: window.scrollY,
+      entries: [],
+    };
     persist();
+    renderUndo();
     renderSuggestions(); // hide the starter chips now that they're chatting
     // The message text lets the dashboard surface common questions/issues.
     track("message_sent", { message: text });
@@ -550,9 +571,11 @@
 
         enterActingMode(); // minimize the window so the user can watch the page
         showCursorCaption(action.reason);
+        const undoEntry = captureUndoEntry(action);
         const r = await performAction(action);
         hideCursorCaption();
         if (r.executed) {
+          if (undoEntry && state.undoDraft) state.undoDraft.entries.push(undoEntry);
           state.recentSigs.push(sig);
           if (state.recentSigs.length > RECENT_SIGS_MAX) state.recentSigs.shift();
           // Record what we did so the next turn's model remembers and won't redo it.
@@ -586,6 +609,7 @@
       // Report the outcome so the dashboard can chart resolution vs. common issues.
       if (stuck) track("goal_stuck", { steps: state.autoSteps });
       else track("goal_completed", { steps: state.autoSteps });
+      finishUndoCommand();
       attachFeedback(); // let the visitor rate the answer (CSAT)
     } catch (err) {
       console.error("[NaviNate]", err);
@@ -593,9 +617,108 @@
       exitActingMode();
       addBubble("assistant", "Hmm, I couldn't reach my brain just now. Mind trying again?");
       setStatus("");
+      finishUndoCommand();
     } finally {
       busy = false;
+      renderUndo();
     }
+  }
+
+  function renderUndo() {
+    if (!undoBtn) return;
+    undoBtn.parentElement.style.display = state.lastUndo ? "flex" : "none";
+    undoBtn.disabled = busy;
+  }
+
+  function captureUndoEntry(action) {
+    if (action.action === "scroll") {
+      return { kind: "scroll", x: window.scrollX, y: window.scrollY };
+    }
+    const node = action.target_id ? findByAgentId(action.target_id) : null;
+    if (!node) return null;
+    const targetId = String(action.target_id);
+    if (action.action === "type") {
+      return { kind: "value", targetId, value: node.value || "" };
+    }
+    if (action.action === "select" && node.tagName === "SELECT") {
+      return { kind: "select", targetId, value: node.value };
+    }
+    if (action.action === "click" && /^(checkbox|radio)$/i.test(node.type || "")) {
+      return { kind: "checked", targetId, checked: !!node.checked };
+    }
+    if (action.action === "click") {
+      const group = node.parentElement;
+      const previous = group && group.querySelector(
+        '.active, [aria-pressed="true"], [aria-selected="true"]'
+      );
+      if (previous && previous !== node) {
+        if (!previous.dataset.agentId) previous.dataset.agentId = String(++agentIdCounter);
+        return { kind: "click", targetId: previous.dataset.agentId };
+      }
+    }
+    return null;
+  }
+
+  function finishUndoCommand() {
+    const draft = state.undoDraft;
+    if (!draft) return;
+    const changedPage = window.location.href !== draft.startUrl;
+    if (draft.entries.length || changedPage) state.lastUndo = draft;
+    state.undoDraft = null;
+    persist();
+    renderUndo();
+  }
+
+  async function undoLastCommand() {
+    if (busy || !state.lastUndo) return;
+    busy = true;
+    renderUndo();
+    const transaction = state.lastUndo;
+    state.lastUndo = null;
+    state.undoDraft = null;
+    persist();
+    try {
+      if (window.location.href !== transaction.startUrl) {
+        SS.setItem("navinate.undoNotice", `Undid: ${transaction.command}`);
+        window.location.href = transaction.startUrl;
+        return;
+      }
+      for (const entry of [...transaction.entries].reverse()) {
+        const node = entry.targetId ? findByAgentId(entry.targetId) : null;
+        if (entry.kind === "scroll") {
+          window.scrollTo({ left: entry.x, top: entry.y, behavior: "smooth" });
+        } else if (entry.kind === "value" && node) {
+          setNativeValue(node, entry.value);
+        } else if (entry.kind === "select" && node) {
+          setNativeValue(node, entry.value);
+        } else if (entry.kind === "checked" && node) {
+          node.checked = entry.checked;
+          node.dispatchEvent(new Event("input", { bubbles: true }));
+          node.dispatchEvent(new Event("change", { bubbles: true }));
+        } else if (entry.kind === "click" && node) {
+          realClick(node);
+        }
+      }
+      addBubble("assistant", `Undid your last command: “${transaction.command}”`);
+      state.history.push({ role: "assistant", content: `Undid the previous command: ${transaction.command}` });
+      persist();
+      track("command_undone", { message: transaction.command });
+    } finally {
+      busy = false;
+      renderUndo();
+    }
+  }
+
+  function setNativeValue(node, value) {
+    const proto = node.tagName === "SELECT"
+      ? window.HTMLSelectElement.prototype
+      : node.tagName === "TEXTAREA"
+        ? window.HTMLTextAreaElement.prototype
+        : window.HTMLInputElement.prototype;
+    const setter = Object.getOwnPropertyDescriptor(proto, "value").set;
+    setter.call(node, value);
+    node.dispatchEvent(new Event("input", { bubbles: true }));
+    node.dispatchEvent(new Event("change", { bubbles: true }));
   }
 
   // Append 👍/👎 to the last assistant message so visitors can rate the outcome.
@@ -868,6 +991,14 @@
     if (theme.enabled === false) return;
     if (Number.isFinite(theme.maxAutoSteps)) MAX_AUTO_STEPS = theme.maxAutoSteps;
     buildUI();
+    const undoNotice = SS.getItem("navinate.undoNotice");
+    if (undoNotice) {
+      SS.removeItem("navinate.undoNotice");
+      openPanel();
+      addBubble("assistant", undoNotice);
+      state.history.push({ role: "assistant", content: undoNotice });
+      persist();
+    }
     // Count genuine page loads where the widget is present (the denominator for
     // adoption %). Skip agent-driven reloads so they don't inflate page views.
     if (!state.pendingContinue) track("widget_loaded");
@@ -974,6 +1105,15 @@
     .nn-assistant blockquote { margin: 8px 0; padding: 4px 12px; border-left: 3px solid #d7dbe8; color: #55607a; }
 
     .nn-status { padding: 6px 16px; font-size: 12.5px; color: #6b6b7b; background: #f7f7fb; display: none; font-style: italic; }
+
+    .nn-undo-row { display: none; justify-content: flex-end; padding: 7px 12px; background: #f7f7fb; border-top: 1px solid #eceef5; }
+    .nn-undo {
+      border: 1px solid #d9ddea; background: #fff; color: #4d556b; border-radius: 9px;
+      padding: 6px 10px; font-size: 12.5px; font-weight: 600; cursor: pointer;
+      transition: border-color .12s ease, color .12s ease, background .12s ease;
+    }
+    .nn-undo:hover { border-color: var(--nn-accent); color: var(--nn-accent); background: #f8f9ff; }
+    .nn-undo:disabled { opacity: .5; cursor: default; }
 
     .nn-inputbar { display: flex; gap: 8px; padding: 12px; background: #fff; border-top: 1px solid #eee; }
     .nn-input { flex: 1; border: 1px solid #dcdce6; border-radius: 12px; padding: 11px 13px; font-size: 14px; outline: none; }
