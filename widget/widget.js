@@ -66,7 +66,7 @@
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   // ---- build the UI --------------------------------------------------------
-  let root, panel, log, input, sendBtn, launcher, cursor, statusEl;
+  let root, panel, log, input, sendBtn, launcher, cursor, cursorCaption, statusEl;
 
   function buildUI() {
     root = el("div", { id: "navinate-root" });
@@ -114,7 +114,8 @@
 
     // Fake cursor
     cursor = el("div", { className: "nn-cursor" });
-    cursor.innerHTML = svgCursor();
+    cursor.innerHTML = svgCursor() + '<div class="nn-cursor-caption"></div>';
+    cursorCaption = cursor.querySelector(".nn-cursor-caption");
     root.appendChild(cursor);
 
     // Apply theme accent
@@ -366,7 +367,9 @@
         }
         state.repeatStrikes = 0; // made real progress — reset the strike counter
 
+        showCursorCaption(action.reason);
         const r = await performAction(action);
+        hideCursorCaption();
         if (r.executed) {
           state.recentSigs.push(sig);
           if (state.recentSigs.length > RECENT_SIGS_MAX) state.recentSigs.shift();
@@ -396,6 +399,7 @@
       setStatus("");
     } catch (err) {
       console.error("[NaviNate]", err);
+      hideCursorCaption(0);
       addBubble("assistant", "Hmm, I couldn't reach my brain just now. Mind trying again?");
       setStatus("");
     } finally {
@@ -515,6 +519,20 @@
   }
 
   // ---- fake cursor + real interaction --------------------------------------
+  let captionTimer;
+  function showCursorCaption(text) {
+    clearTimeout(captionTimer);
+    cursorCaption.textContent = text || "Working on this…";
+    cursorCaption.classList.add("nn-caption-visible");
+  }
+
+  function hideCursorCaption(delay = 900) {
+    clearTimeout(captionTimer);
+    captionTimer = setTimeout(() => {
+      cursorCaption.classList.remove("nn-caption-visible");
+    }, delay);
+  }
+
   function moveCursorToNode(node) {
     node.scrollIntoView({ behavior: "smooth", block: "center" });
     return sleep(120).then(() => {
@@ -522,6 +540,8 @@
       const x = rect.left + rect.width / 2;
       const y = rect.top + rect.height / 2;
       cursor.classList.add("nn-cursor-active");
+      cursor.classList.toggle("nn-cursor-left", x > window.innerWidth - 250);
+      cursor.classList.toggle("nn-cursor-above", y > window.innerHeight - 100);
       cursor.style.transform = `translate(${x}px, ${y}px)`;
       return sleep(650); // let the cursor glide
     });
@@ -681,6 +701,24 @@
     }
     .nn-cursor-active { opacity: 1; }
     .nn-cursor-click { animation: nn-tap .18s ease; }
+    .nn-cursor-caption {
+      position: absolute; left: 18px; top: 28px; width: max-content; max-width: 230px;
+      padding: 7px 10px; border-radius: 9px; background: #151722; color: #fff;
+      font-size: 12px; font-weight: 500; line-height: 1.35; letter-spacing: 0;
+      box-shadow: 0 5px 16px rgba(0,0,0,.24); filter: none;
+      opacity: 0; transform: translateY(-3px) scale(.96); transform-origin: top left;
+      transition: opacity .16s ease, transform .16s ease;
+    }
+    .nn-cursor-caption::before {
+      content: ""; position: absolute; left: 5px; top: -5px; width: 10px; height: 10px;
+      background: #151722; transform: rotate(45deg);
+    }
+    .nn-cursor-caption.nn-caption-visible { opacity: 1; transform: none; }
+    .nn-cursor-left .nn-cursor-caption { left: auto; right: 14px; transform-origin: top right; }
+    .nn-cursor-left .nn-cursor-caption::before { left: auto; right: 5px; }
+    .nn-cursor-above .nn-cursor-caption { top: auto; bottom: 27px; transform-origin: bottom left; }
+    .nn-cursor-above.nn-cursor-left .nn-cursor-caption { transform-origin: bottom right; }
+    .nn-cursor-above .nn-cursor-caption::before { top: auto; bottom: -5px; }
     @keyframes nn-tap { 0% { transform-origin: 0 0; } 50% { filter: drop-shadow(0 0 0 rgba(0,0,0,0)) brightness(1.4); } }
 
     .nn-ring {
