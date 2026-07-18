@@ -337,6 +337,8 @@ WHEN TO STOP (important — avoid loops):
 - Your previous actions this session are recorded in the conversation as assistant notes. Read them before acting.
 - Do NOT repeat an action you have already taken. If the page already reflects your intent (the filter is active, the item is in the cart, you're on the right tab), that step is DONE — move to the next step or finish.
 - Once the user's goal is accomplished, STOP calling the tool and reply with a short plain-text confirmation. Do not keep acting.
+- Treat the latest explicit current-goal instruction as authoritative. Never continue an older user request after finishing a newer one.
+- If the current goal only asks to go, open, or navigate to a page, reaching that page completes the goal. Do not select products, change fields, or add anything to the cart unless the current goal explicitly asks for it.
 - If the element you need is not in pageElements, or you're unsure the last action worked, ask the user in plain text instead of guessing or repeating.${siteMapBlock}`;
 }
 
