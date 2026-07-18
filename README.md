@@ -101,6 +101,33 @@ This writes `scraper/sitemaps/<clientId>.json`. On each `/chat`, the backend loa
 map matching the request's `clientId`, falling back to the shared `sitemap.json`. The
 scraper finds `BASE44_URL` from `--base44`, the environment, or `server/.env`.
 
+### Rescanning from the dashboard (no CLI)
+
+Clients can trigger and monitor a rescan from the Base44 dashboard instead of running
+the CLI. The dashboard talks to the **agent backend** (the crawler needs Puppeteer,
+which Base44 can't run), which crawls in the background and writes the same
+`sitemaps/<clientId>.json`. Two endpoints on the backend (`AGENT_BACKEND_URL`, i.e.
+your ngrok/cloudflared URL):
+
+**`POST /scrape`** — start a rescan. Body `{ "clientId": "<id>" }` (the site URL is
+read from that client's `company_website_url`; pass `{ "url": "..." }` to override).
+Returns the initial status; a crawl already running for that client isn't duplicated.
+
+**`GET /scrape/status?clientId=<id>`** — poll while it runs:
+```json
+{
+  "state": "running",             // idle | running | done | error
+  "pages": 12,                     // live count as it crawls
+  "url": "https://acme.com",
+  "startedAt": "…", "finishedAt": null, "error": null,
+  "sitemap": { "exists": true, "pages": 16, "updatedAt": "…" }  // the saved map
+}
+```
+The crawl runs in the backend process (single job per client). `SCRAPE_MAX_PAGES` /
+`SCRAPE_MAX_DEPTH` env vars tune the limits (default 40 / 3). Requires the scraper's
+deps to be installed (`cd scraper && npm install`) — Puppeteer is imported lazily, so
+the server still boots without them and only errors when a scrape is triggered.
+
 ---
 
 ## The Base44 ↔ local contract

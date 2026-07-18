@@ -162,6 +162,80 @@ function loadSiteMap(clientId) {
 }
 
 // ---------------------------------------------------------------------------
+// On-demand rescans. The client clicks "Rescan my site" in the Base44 dashboard,
+// which calls POST /scrape here; the dashboard then polls GET /scrape/status.
+// The crawl runs in this process (it needs Puppeteer, which Base44 can't run) and
+// writes scraper/sitemaps/<clientId>.json — the same file loadSiteMap reads.
+// ---------------------------------------------------------------------------
+const scrapeJobs = new Map(); // clientId -> { state, pages, url, startedAt, finishedAt, error }
+const SCRAPE_MAX_PAGES = parseInt(process.env.SCRAPE_MAX_PAGES || "40", 10);
+const SCRAPE_MAX_DEPTH = parseInt(process.env.SCRAPE_MAX_DEPTH || "3", 10);
+
+function safeClientId(clientId) {
+  return String(clientId || "").replace(/[^a-zA-Z0-9_-]/g, "");
+}
+
+function sitemapPath(clientId) {
+  const safeId = safeClientId(clientId);
+  return path.join(__dirname, "..", "scraper", safeId ? path.join("sitemaps", `${safeId}.json`) : "sitemap.json");
+}
+
+// Info about the currently-saved map for a client (for the dashboard status card).
+function savedSitemapInfo(clientId) {
+  try {
+    const p = sitemapPath(clientId);
+    if (!fs.existsSync(p)) return { exists: false, pages: 0, updatedAt: null };
+    const map = JSON.parse(fs.readFileSync(p, "utf8"));
+    return { exists: true, pages: Object.keys(map).length, updatedAt: fs.statSync(p).mtime.toISOString() };
+  } catch {
+    return { exists: false, pages: 0, updatedAt: null };
+  }
+}
+
+function scrapeStatus(clientId) {
+  const job = scrapeJobs.get(clientId) || { state: "idle" };
+  return { ...job, sitemap: savedSitemapInfo(clientId) };
+}
+
+// Kick off a crawl for a client (unless one is already running). Runs async and
+// updates scrapeJobs as it goes; writes the sitemap when done. Returns the status.
+async function startScrape(clientId, startUrl) {
+  const existing = scrapeJobs.get(clientId);
+  if (existing && existing.state === "running") return scrapeStatus(clientId);
+
+  const job = { state: "running", pages: 0, url: startUrl, startedAt: new Date().toISOString(), finishedAt: null, error: null };
+  scrapeJobs.set(clientId, job);
+
+  // Import Puppeteer lazily so the server still boots if scraper deps aren't
+  // installed — the error only surfaces when someone actually triggers a scrape.
+  (async () => {
+    try {
+      const { crawl } = await import("../scraper/crawl.js");
+      const siteMap = await crawl({
+        startUrl,
+        maxPages: SCRAPE_MAX_PAGES,
+        maxDepth: SCRAPE_MAX_DEPTH,
+        onProgress: ({ pages }) => { job.pages = pages; },
+      });
+      const p = sitemapPath(clientId);
+      fs.mkdirSync(path.dirname(p), { recursive: true });
+      fs.writeFileSync(p, JSON.stringify(siteMap, null, 2));
+      job.pages = Object.keys(siteMap).length;
+      job.state = "done";
+      job.finishedAt = new Date().toISOString();
+      console.log(`🕸  scrape for "${clientId}" done — ${job.pages} pages`);
+    } catch (err) {
+      job.state = "error";
+      job.error = String(err.message || err).slice(0, 300);
+      job.finishedAt = new Date().toISOString();
+      console.warn(`scrape for "${clientId}" failed:`, job.error);
+    }
+  })();
+
+  return scrapeStatus(clientId);
+}
+
+// ---------------------------------------------------------------------------
 // The single tool the model uses to drive the page (OpenAI function-calling schema).
 // ---------------------------------------------------------------------------
 const BROWSER_ACTION_TOOL = {
@@ -333,6 +407,41 @@ app.post("/analytics", (req, res) => {
     sendAnalytics(clientId, payload);
   }
   res.json({ ok: true });
+});
+
+// Start a rescan of a client's site. The Base44 dashboard's "Rescan my site"
+// button calls this. We resolve the site URL from the client's config (or an
+// explicit `url` override), then crawl in the background. Returns the status.
+app.post("/scrape", async (req, res) => {
+  const clientId = req.body?.clientId || req.query.clientId || "";
+  if (!clientId) return res.status(400).json({ error: "clientId is required" });
+
+  let startUrl = req.body?.url || "";
+  if (!startUrl) {
+    const config = await getClientConfig(clientId);
+    startUrl = config.companyWebsiteUrl || "";
+  }
+  if (!startUrl) {
+    return res.status(400).json({
+      error: "No site URL. Set company_website_url in the client's config, or pass { url } in the body.",
+    });
+  }
+  try {
+    new URL(startUrl); // validate before launching a browser
+  } catch {
+    return res.status(400).json({ error: `Invalid site URL: ${startUrl}` });
+  }
+
+  const status = await startScrape(clientId, startUrl);
+  res.json(status);
+});
+
+// Poll the status of a client's scrape (state: idle | running | done | error)
+// plus info about the currently-saved sitemap.
+app.get("/scrape/status", (req, res) => {
+  const clientId = req.query.clientId || "";
+  if (!clientId) return res.status(400).json({ error: "clientId is required" });
+  res.json(scrapeStatus(clientId));
 });
 
 // Serve the widget so the client's <script src="https://<ngrok>/widget.js"> works.
