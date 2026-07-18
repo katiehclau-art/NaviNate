@@ -1,0 +1,17 @@
+{
+  "name": "navinate-scraper",
+  "version": "1.0.0",
+  "description": "Crawls a client site and builds sitemap.json — the agent's knowledge base of which subpage does what.",
+  "type": "module",
+  "main": "scrape.js",
+  "scripts": {
+    "scrape": "node scrape.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "cheerio": "^1.0.0",
+    "puppeteer": "^23.0.0"
+  }
+}

@@ -1,0 +1,219 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>NimbusCore — Enterprise Cloud &amp; Telecom Solutions</title>
+<meta name="description" content="Deliberately over-complicated demo site for testing the NaviNate agent locally." />
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: system-ui, "Segoe UI", Roboto, sans-serif; color: #1f2430; background: #f4f6fb; }
+  header { background: #0b1f3a; color: #fff; position: sticky; top: 0; z-index: 50; }
+  .bar { display: flex; align-items: center; gap: 28px; padding: 14px 28px; max-width: 1200px; margin: 0 auto; }
+  .brand { font-weight: 800; letter-spacing: .5px; font-size: 18px; }
+  nav ul { list-style: none; display: flex; gap: 22px; margin: 0; padding: 0; }
+  nav > ul > li { position: relative; }
+  nav a { color: #cdd6ea; text-decoration: none; font-size: 14px; cursor: pointer; }
+  nav a:hover { color: #fff; }
+  nav li ul { display: none; position: absolute; top: 24px; left: 0; background: #10294a; padding: 8px 0; border-radius: 8px; min-width: 190px; box-shadow: 0 12px 30px rgba(0,0,0,.3); }
+  nav li:hover > ul { display: block; }
+  nav li ul li { padding: 7px 16px; white-space: nowrap; }
+  .hero { max-width: 1200px; margin: 0 auto; padding: 40px 28px 10px; }
+  .hero h1 { font-size: 30px; margin: 0 0 6px; }
+  .hero p { color: #55607a; margin: 0; }
+  main { max-width: 1200px; margin: 0 auto; padding: 24px 28px 80px; display: grid; grid-template-columns: 240px 1fr; gap: 28px; }
+  aside { background: #fff; border: 1px solid #e6e9f2; border-radius: 12px; padding: 18px; height: fit-content; }
+  aside h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .6px; color: #8a93aa; }
+  .filter-group { margin-bottom: 18px; }
+  .filter-btn { display: block; width: 100%; text-align: left; background: #f1f4fb; border: 1px solid #e2e7f2; color: #2a3346; padding: 8px 11px; border-radius: 8px; margin: 5px 0; cursor: pointer; font-size: 13px; }
+  .filter-btn.active { background: #2f6bff; border-color: #2f6bff; color: #fff; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 16px; }
+  .card { background: #fff; border: 1px solid #e6e9f2; border-radius: 12px; padding: 16px; display: flex; flex-direction: column; }
+  .card h4 { margin: 0 0 4px; font-size: 15px; }
+  .tag { font-size: 11px; color: #6b7590; background: #eef1f8; padding: 2px 7px; border-radius: 20px; display: inline-block; margin: 2px 3px 8px 0; }
+  .price { font-weight: 800; font-size: 18px; margin: 8px 0; }
+  .btn { background: #2f6bff; color: #fff; border: none; padding: 9px 12px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600; margin-top: auto; }
+  .btn.secondary { background: #eaf0ff; color: #2f6bff; }
+  .cart { margin-left: auto; background: #16305a; padding: 7px 13px; border-radius: 20px; font-size: 13px; }
+  .config { grid-column: 1 / -1; background: #fff; border: 1px solid #e6e9f2; border-radius: 12px; padding: 20px; margin-top: 10px; }
+  .tabs { display: flex; gap: 6px; border-bottom: 2px solid #eef1f8; margin-bottom: 16px; flex-wrap: wrap; }
+  .tab { padding: 9px 14px; cursor: pointer; border: none; background: none; font-size: 14px; color: #6b7590; border-bottom: 2px solid transparent; margin-bottom: -2px; }
+  .tab.active { color: #2f6bff; border-bottom-color: #2f6bff; font-weight: 600; }
+  .panel { display: none; } .panel.active { display: block; }
+  .panel label { display: block; margin: 10px 0 4px; font-size: 13px; color: #55607a; }
+  .panel select, .panel input { padding: 8px 10px; border: 1px solid #dbe0ee; border-radius: 8px; min-width: 220px; }
+  .toast { position: fixed; bottom: 20px; left: 20px; background: #10294a; color: #fff; padding: 12px 16px; border-radius: 10px; opacity: 0; transform: translateY(10px); transition: .25s; z-index: 40; }
+  .toast.show { opacity: 1; transform: none; }
+  footer { text-align: center; padding: 24px; color: #8a93aa; font-size: 12px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="bar">
+    <span class="brand">☁ NimbusCore</span>
+    <nav>
+      <ul>
+        <li><a>Services ▾</a>
+          <ul>
+            <li><a>Cloud ▾</a>
+              <ul><li><a>Enterprise Compute</a></li><li><a>Hybrid Compute</a></li><li><a>Edge Nodes</a></li></ul>
+            </li>
+            <li><a>Telecom</a></li>
+            <li><a>Storage</a></li>
+          </ul>
+        </li>
+        <li><a>Solutions ▾</a>
+          <ul><li><a>Finance</a></li><li><a>Healthcare</a></li><li><a>Government</a></li></ul>
+        </li>
+        <li><a>Pricing</a></li>
+        <li><a>Support ▾</a>
+          <ul><li><a>Docs</a></li><li><a>Contact Support</a></li><li><a>Status</a></li></ul>
+        </li>
+      </ul>
+    </nav>
+    <span class="cart">🛒 Cart: <b id="cart-count">0</b></span>
+  </div>
+</header>
+
+<section class="hero">
+  <h1>Enterprise Cloud &amp; Telecom Solutions</h1>
+  <p>Configure compute the hard way. (This is a local demo site for the NaviNate agent — ask the bot to do things for you.)</p>
+</section>
+
+<main>
+  <aside>
+    <div class="filter-group">
+      <h3>Region</h3>
+      <button class="filter-btn active" data-filter="region" data-value="all">All regions</button>
+      <button class="filter-btn" data-filter="region" data-value="us">US-East</button>
+      <button class="filter-btn" data-filter="region" data-value="eu">EU-Central</button>
+      <button class="filter-btn" data-filter="region" data-value="apac">APAC</button>
+    </div>
+    <div class="filter-group">
+      <h3>Workload</h3>
+      <button class="filter-btn active" data-filter="type" data-value="all">All types</button>
+      <button class="filter-btn" data-filter="type" data-value="enterprise">Enterprise</button>
+      <button class="filter-btn" data-filter="type" data-value="hybrid">Hybrid</button>
+      <button class="filter-btn" data-filter="type" data-value="edge">Edge</button>
+    </div>
+  </aside>
+
+  <section>
+    <div class="grid" id="catalog">
+      <!-- products injected by JS -->
+    </div>
+
+    <div class="config">
+      <h3 style="margin-top:0">Server Configuration Wizard</h3>
+      <div class="tabs">
+        <button class="tab active" data-tab="hardware">1. Hardware</button>
+        <button class="tab" data-tab="networking">2. Networking</button>
+        <button class="tab" data-tab="security">3. Security</button>
+        <button class="tab" data-tab="billing">4. Billing</button>
+      </div>
+      <div class="panel active" data-panel="hardware">
+        <label>vCPU cores</label>
+        <select><option>4</option><option>8</option><option>16</option><option>64</option></select>
+        <label>RAM</label>
+        <select><option>16 GB</option><option>64 GB</option><option>256 GB</option></select>
+      </div>
+      <div class="panel" data-panel="networking">
+        <label>Region</label>
+        <select><option>US-East</option><option>EU-Central</option><option>APAC</option></select>
+        <label>Bandwidth</label>
+        <select><option>1 Gbps</option><option>10 Gbps</option><option>40 Gbps</option></select>
+      </div>
+      <div class="panel" data-panel="security">
+        <label>Compliance</label>
+        <select><option>SOC 2</option><option>HIPAA</option><option>FedRAMP</option></select>
+        <label>Encryption</label>
+        <select><option>AES-256</option><option>Customer-managed keys</option></select>
+      </div>
+      <div class="panel" data-panel="billing">
+        <label>Billing email</label>
+        <input type="email" placeholder="you@company.com" />
+        <label>Term</label>
+        <select><option>Monthly</option><option>Annual (save 15%)</option></select>
+        <div style="margin-top:16px"><button class="btn">Review &amp; Place Order</button></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div class="toast" id="toast"></div>
+<footer>NimbusCore — demo site · not a real company</footer>
+
+<script>
+  // ---- product data ----
+  const products = [
+    { name: "Nimbus S1", type: "edge",       region: "us",   tags: ["Edge","2 vCPU"],       price: 39 },
+    { name: "Nimbus E4", type: "enterprise", region: "us",   tags: ["Enterprise","16 vCPU"], price: 299 },
+    { name: "Nimbus E4", type: "enterprise", region: "eu",   tags: ["Enterprise","EU","16 vCPU"], price: 319 },
+    { name: "Nimbus H8", type: "hybrid",     region: "eu",   tags: ["Hybrid","EU","32 vCPU"], price: 549 },
+    { name: "Nimbus H8", type: "hybrid",     region: "apac", tags: ["Hybrid","APAC","32 vCPU"], price: 579 },
+    { name: "Nimbus X1", type: "enterprise", region: "apac", tags: ["Enterprise","APAC","64 vCPU"], price: 999 },
+  ];
+  const state = { region: "all", type: "all" };
+
+  function render() {
+    const c = document.getElementById("catalog");
+    c.innerHTML = "";
+    products
+      .filter(p => (state.region === "all" || p.region === state.region))
+      .filter(p => (state.type === "all" || p.type === state.type))
+      .forEach(p => {
+        const card = document.createElement("div");
+        card.className = "card";
+        card.innerHTML =
+          '<h4>' + p.name + '</h4>' +
+          p.tags.map(t => '<span class="tag">' + t + '</span>').join('') +
+          '<div class="price">$' + p.price + '/mo</div>' +
+          '<button class="btn secondary" style="margin-bottom:6px">View details</button>' +
+          '<button class="btn add">Add to Cart</button>';
+        card.querySelector(".add").onclick = () => addToCart(p.name);
+        c.appendChild(card);
+      });
+    if (!c.children.length) c.innerHTML = '<p style="color:#8a93aa">No servers match those filters.</p>';
+  }
+
+  let cart = 0;
+  function addToCart(name) {
+    cart++;
+    document.getElementById("cart-count").textContent = cart;
+    toast("Added " + name + " to cart");
+  }
+  function toast(msg) {
+    const t = document.getElementById("toast");
+    t.textContent = msg; t.classList.add("show");
+    setTimeout(() => t.classList.remove("show"), 1800);
+  }
+
+  // ---- filters ----
+  document.querySelectorAll(".filter-btn").forEach(btn => {
+    btn.onclick = () => {
+      const f = btn.dataset.filter;
+      document.querySelectorAll('.filter-btn[data-filter="' + f + '"]').forEach(b => b.classList.remove("active"));
+      btn.classList.add("active");
+      state[f] = btn.dataset.value;
+      render();
+    };
+  });
+
+  // ---- config tabs ----
+  document.querySelectorAll(".tab").forEach(tab => {
+    tab.onclick = () => {
+      document.querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
+      document.querySelectorAll(".panel").forEach(p => p.classList.remove("active"));
+      tab.classList.add("active");
+      document.querySelector('.panel[data-panel="' + tab.dataset.tab + '"]').classList.add("active");
+    };
+  });
+
+  render();
+</script>
+
+<!-- The NaviNate widget. Because this page is served by the backend, the widget
+     auto-targets the same origin (localhost) — no ngrok, no CORS, no Base44. -->
+<script src="/widget.js?clientId=demo"></script>
+</body>
+</html>
