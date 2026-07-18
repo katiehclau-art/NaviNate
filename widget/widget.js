@@ -581,8 +581,12 @@
         ? window.HTMLTextAreaElement.prototype
         : window.HTMLInputElement.prototype;
     const setter = Object.getOwnPropertyDescriptor(proto, "value").set;
+    // Clear first even when the requested value is empty. Previously the setter
+    // only ran inside the loop, so clearing a field was incorrectly a no-op.
     let acc = "";
-    for (const ch of text) {
+    setter.call(node, acc);
+    node.dispatchEvent(new Event("input", { bubbles: true }));
+    for (const ch of String(text)) {
       acc += ch;
       setter.call(node, acc);
       node.dispatchEvent(new Event("input", { bubbles: true }));
