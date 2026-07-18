@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>API Reference — NimbusCore</title>
+<meta name="description" content="NimbusCore API reference: authentication and the core endpoints for servers, storage, and billing." />
+<link rel="stylesheet" href="/assets/site.css?v=5" />
+<style>
+  .endpoint { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; background: #f1f4fb; border: 1px solid #e2e7f2; border-radius: 8px; padding: 10px 12px; margin: 8px 0; }
+  .method { font-weight: 700; color: #2f6bff; margin-right: 8px; }
+</style>
+</head>
+<body>
+<div id="site-header"></div>
+<nav class="breadcrumb"><a href="/">Home</a> › <a href="/support.html">Support</a> › API Reference</nav>
+
+<section class="hero">
+  <h1>API Reference</h1>
+  <p>This is demo documentation — these endpoints aren't real, but the shape mirrors what a NimbusCore API would offer.</p>
+</section>
+
+<main>
+  <div class="panel-card">
+    <h2>Authentication</h2>
+    <p class="lead">All requests require an <code>Authorization: Bearer &lt;api_key&gt;</code> header. Generate a key from your account dashboard.</p>
+  </div>
+  <div class="panel-card" style="margin-top: 16px;">
+    <h2>Core endpoints</h2>
+    <div class="endpoint"><span class="method">GET</span>/v1/servers</div>
+    <div class="endpoint"><span class="method">POST</span>/v1/servers</div>
+    <div class="endpoint"><span class="method">GET</span>/v1/servers/:id</div>
+    <div class="endpoint"><span class="method">DELETE</span>/v1/servers/:id</div>
+    <div class="endpoint"><span class="method">GET</span>/v1/storage/buckets</div>
+    <div class="endpoint"><span class="method">GET</span>/v1/billing/invoices</div>
+    <p class="lead">Need something not listed here? <a href="/contact.html">Contact support</a>.</p>
+  </div>
+</main>
+
+<footer>NimbusCore — demo site · not a real company</footer>
+<script>window.PAGE = "support";</script>
+<script src="/assets/site.js?v=5"></script>
+<script src="/widget.js?clientId=demo"></script>
+</body>
+</html>
