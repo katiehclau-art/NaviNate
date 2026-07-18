@@ -112,7 +112,7 @@ Increment your dashboard's "Actions Automated" / "Time Saved" cards from these.
    and POSTs `{ message, clientId, pageElements, history }` to `/chat`.
 3. The backend prompts **OpenAI** with the client's system prompt + the element list and
    the `execute_browser_action` tool.
-4. The model returns one action (`click` / `type` / `scroll` / `navigate` / `highlight`).
+4. The model returns one action (`click` / `type` / `select` / `scroll` / `navigate` / `highlight`).
 5. The widget animates the fake cursor to that element and performs it, then loops —
    re-scanning the now-updated page and taking the next step (up to a safety cap), even
    across page navigations (state is kept in `sessionStorage`).

@@ -102,9 +102,10 @@ const BROWSER_ACTION_TOOL = {
       properties: {
         action_type: {
           type: "string",
-          enum: ["click", "type", "scroll", "navigate", "highlight"],
+          enum: ["click", "type", "select", "scroll", "navigate", "highlight"],
           description:
-            "click: click an element. type: type text into an input. scroll: bring an element into view. " +
+            "click: click an element. type: type text into an input. select: choose an option in a native select dropdown. " +
+            "scroll: bring an element into view. " +
             "navigate: go to a URL (use for jumping to a known subpage). " +
             "highlight: draw attention to an element and explain it WITHOUT clicking (use this instead of click " +
             "for irreversible/high-commitment actions like final checkout or submitting payment when you are not certain).",
@@ -112,11 +113,11 @@ const BROWSER_ACTION_TOOL = {
         target_id: {
           type: "string",
           description:
-            "The data-agent-id of the element to act on (from the pageElements list). Required for click, type, scroll, highlight.",
+            "The data-agent-id of the element to act on (from the pageElements list). Required for click, type, select, scroll, highlight.",
         },
         value: {
           type: "string",
-          description: "The text to type. Only for action_type=type.",
+          description: "The text to type, or exact dropdown option label/value to select. Required for type or select.",
         },
         url: {
           type: "string",
@@ -161,6 +162,8 @@ Each user turn includes two things:
   - tag: html tag (a, button, input, select, ...)
   - type: input type when relevant
   - text: the element's own label (e.g. "Add to Cart")
+  - value: the element's current value when relevant
+  - options: for native select dropdowns, the available option labels and values
   - context: the text of the surrounding card/row — this usually contains the price and product name tied to THIS element. Use it to pick the right button (e.g. the "Add to Cart" whose context shows "$999/mo").
   - href: destination for links
   - active: true means this control (a filter, tab, or toggle) is ALREADY selected/applied. Do NOT click an active:true element again — it's done; move to the next step.
@@ -172,7 +175,7 @@ Worked example — "add the most expensive plan": read the prices from pageText/
 If the goal cannot be satisfied on this page (e.g. the user asks for a combination of filters that yields no results, or an item that doesn't exist here), don't keep clicking — say so plainly and suggest the closest available alternative you can see in pageText.
 
 HOW TO ACT:
-- To do something on the page, call the execute_browser_action tool.
+- To do something on the page, call the execute_browser_action tool. Use "select" with an exact option label or value for native select dropdowns.
 - Take ONE step per turn. After the page updates you'll be called again with fresh pageElements.
 - Always set a friendly "reason" — the user sees it as you work.
 - If the user is just asking a question, answer in plain text and don't call the tool.

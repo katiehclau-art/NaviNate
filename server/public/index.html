@@ -42,16 +42,6 @@
   .panel { display: none; } .panel.active { display: block; }
   .panel label { display: block; margin: 10px 0 4px; font-size: 13px; color: #55607a; }
   .panel select, .panel input { padding: 8px 10px; border: 1px solid #dbe0ee; border-radius: 8px; min-width: 220px; }
-  .agent-select { position: relative; width: 220px; }
-  .agent-select-native { display: none; }
-  .agent-select-trigger { width: 100%; padding: 8px 34px 8px 10px; border: 1px solid #dbe0ee; border-radius: 8px; background: #fff; color: #1f2430; text-align: left; font: inherit; cursor: pointer; position: relative; }
-  .agent-select-trigger::after { content: "⌄"; position: absolute; right: 11px; top: 50%; transform: translateY(-55%); font-size: 18px; }
-  .agent-select-trigger[aria-expanded="true"]::after { transform: translateY(-35%) rotate(180deg); }
-  .agent-select-menu { display: none; position: absolute; z-index: 80; top: calc(100% + 4px); left: 0; width: 100%; padding: 5px; border: 1px solid #cbd2e2; border-radius: 8px; background: #fff; box-shadow: 0 12px 28px rgba(15, 31, 58, .2); }
-  .agent-select.open .agent-select-menu { display: block; }
-  .agent-select-option { display: block; width: 100%; padding: 8px 10px; border: 0; border-radius: 6px; background: transparent; color: #1f2430; text-align: left; font: inherit; cursor: pointer; }
-  .agent-select-option:hover, .agent-select-option:focus { background: #eaf0ff; outline: none; }
-  .agent-select-option[aria-selected="true"] { background: #2f6bff; color: #fff; }
   .toast { position: fixed; bottom: 20px; left: 20px; background: #10294a; color: #fff; padding: 12px 16px; border-radius: 10px; opacity: 0; transform: translateY(10px); transition: .25s; z-index: 40; }
   .toast.show { opacity: 1; transform: none; }
   footer { text-align: center; padding: 24px; color: #8a93aa; font-size: 12px; }
@@ -218,90 +208,6 @@
       document.querySelector('.panel[data-panel="' + tab.dataset.tab + '"]').classList.add("active");
     };
   });
-
-  // Replace native selects with DOM-based listboxes. Native browser popup menus
-  // live outside the page DOM, so an embedded agent cannot inspect or click their
-  // options. These controls keep the original select in sync while making the
-  // open-menu and choose-option steps visible and independently clickable.
-  function enhanceSelects() {
-    document.querySelectorAll(".panel select").forEach((select, index) => {
-      const fieldName = select.previousElementSibling?.textContent?.trim() || "Dropdown";
-      const wrapper = document.createElement("div");
-      wrapper.className = "agent-select";
-
-      const trigger = document.createElement("button");
-      trigger.type = "button";
-      trigger.className = "agent-select-trigger";
-      trigger.setAttribute("role", "combobox");
-      trigger.setAttribute("aria-haspopup", "listbox");
-      trigger.setAttribute("aria-expanded", "false");
-      trigger.setAttribute("aria-controls", "agent-select-menu-" + index);
-
-      const menu = document.createElement("div");
-      menu.id = "agent-select-menu-" + index;
-      menu.className = "agent-select-menu";
-      menu.setAttribute("role", "listbox");
-      menu.setAttribute("aria-label", fieldName + " options");
-
-      function syncTrigger() {
-        const selected = select.options[select.selectedIndex];
-        trigger.textContent = selected?.text || "Choose an option";
-        trigger.setAttribute(
-          "aria-label",
-          fieldName + " dropdown, selected " + trigger.textContent
-        );
-        menu.querySelectorAll(".agent-select-option").forEach((button) => {
-          button.setAttribute("aria-selected", String(button.dataset.value === select.value));
-        });
-      }
-
-      Array.from(select.options).forEach((option) => {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "agent-select-option";
-        button.textContent = option.text;
-        button.dataset.value = option.value;
-        button.disabled = option.disabled;
-        button.setAttribute("role", "option");
-        button.setAttribute("aria-label", "Select " + option.text + " for " + fieldName);
-        button.onclick = () => {
-          select.value = option.value;
-          select.dispatchEvent(new Event("input", { bubbles: true }));
-          select.dispatchEvent(new Event("change", { bubbles: true }));
-          syncTrigger();
-          wrapper.classList.remove("open");
-          trigger.setAttribute("aria-expanded", "false");
-          trigger.focus();
-        };
-        menu.appendChild(button);
-      });
-
-      trigger.onclick = () => {
-        const willOpen = !wrapper.classList.contains("open");
-        document.querySelectorAll(".agent-select.open").forEach((other) => {
-          other.classList.remove("open");
-          other.querySelector(".agent-select-trigger")?.setAttribute("aria-expanded", "false");
-        });
-        wrapper.classList.toggle("open", willOpen);
-        trigger.setAttribute("aria-expanded", String(willOpen));
-      };
-
-      select.classList.add("agent-select-native");
-      select.parentNode.insertBefore(wrapper, select);
-      wrapper.append(select, trigger, menu);
-      syncTrigger();
-    });
-
-    document.addEventListener("click", (event) => {
-      if (event.target.closest(".agent-select")) return;
-      document.querySelectorAll(".agent-select.open").forEach((wrapper) => {
-        wrapper.classList.remove("open");
-        wrapper.querySelector(".agent-select-trigger")?.setAttribute("aria-expanded", "false");
-      });
-    });
-  }
-
-  enhanceSelects();
 
   render();
 </script>
