@@ -10,11 +10,10 @@
 //   node scrape.js https://your-demo-site.base44.app
 //   node scrape.js https://your-demo-site.base44.app --max 40 --depth 3
 
-import puppeteer from "puppeteer";
-import * as cheerio from "cheerio";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { crawl } from "./crawl.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -82,12 +81,11 @@ for (const f of ["--max", "--depth", "--client", "--base44"]) {
   if (i !== -1) flagValueIndexes.add(i + 1);
 }
 
-let origin;
 // Resolve the site to crawl (an explicit URL wins; otherwise look it up from
-// Base44 via --client) and its origin. Throws friendly errors that the promise
-// chain at the bottom turns into a clean exit — we deliberately DON'T call
-// process.exit() here, since doing so while the config fetch is still closing its
-// socket can trip a libuv assertion on Windows.
+// Base44 via --client). Throws friendly errors that the promise chain at the
+// bottom turns into a clean exit — we deliberately DON'T call process.exit()
+// here, since doing so while the config fetch is still closing its socket can
+// trip a libuv assertion on Windows.
 async function resolveTarget() {
   let startUrl = args.find((a, i) => a.startsWith("http") && !flagValueIndexes.has(i));
   if (!startUrl && CLIENT_ID && BASE44_URL) {
@@ -102,97 +100,22 @@ async function resolveTarget() {
     );
   }
   try {
-    origin = new URL(startUrl).origin;
+    new URL(startUrl); // validate
   } catch {
     throw new Error(`Invalid start URL: ${startUrl}`);
   }
   return startUrl;
 }
 
-// Normalize a URL to dedupe (strip hash + trailing slash).
-function normalize(href, base) {
-  try {
-    const u = new URL(href, base);
-    if (u.origin !== origin) return null; // internal links only
-    u.hash = "";
-    let s = u.href.replace(/\/$/, "");
-    return s || u.href;
-  } catch {
-    return null;
-  }
-}
-
-// Pull a human description of a page from its title / h1 / meta description.
-// Titles, h1s, and meta descriptions on real sites overlap heavily (and usually
-// repeat the brand name), so we clean and dedupe the segments — the result is a
-// tight one-liner the agent's LLM can actually reason over.
-function describe(html) {
-  const $ = cheerio.load(html);
-  const title = ($("title").first().text() || "").trim();
-  const h1 = ($("h1").first().text() || "").trim();
-  const meta = ($('meta[name="description"]').attr("content") || "").trim();
-
-  // Brand is whatever trails the last " — " / " | " in the <title> (e.g. "NimbusCore").
-  const brand = (title.split(/\s+[—|]\s+/).pop() || "").trim();
-  const stripBrand = (s) =>
-    brand ? s.replace(new RegExp(`\\s*[—|]\\s*${brand}\\s*$`), "").trim() : s;
-
-  // Keep title/h1/meta, minus the brand suffix, dropping any segment already
-  // contained in one we've kept (case-insensitive) so nothing repeats.
-  const kept = [];
-  for (const raw of [stripBrand(title), stripBrand(h1), meta]) {
-    const seg = raw.trim();
-    if (!seg) continue;
-    const low = seg.toLowerCase();
-    if (kept.some((k) => k.toLowerCase().includes(low))) continue;
-    // If this new segment supersets an existing shorter one, replace it.
-    const supersedes = kept.findIndex((k) => low.includes(k.toLowerCase()));
-    if (supersedes !== -1) kept[supersedes] = seg;
-    else kept.push(seg);
-  }
-
-  const desc = kept.join(" — ").slice(0, 200);
-  return desc || "(no description)";
-}
-
 async function run(startUrl) {
   console.log(`🕸  Crawling ${startUrl}  (max ${MAX_PAGES} pages, depth ${MAX_DEPTH})`);
-  const browser = await puppeteer.launch({
-    headless: "new",
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+  const siteMap = await crawl({
+    startUrl,
+    maxPages: MAX_PAGES,
+    maxDepth: MAX_DEPTH,
+    onProgress: ({ pages, lastUrl, desc, error }) =>
+      console.log(error ? `  ✗ ${lastUrl} — ${error}` : `  ✓ [${pages}] ${lastUrl}\n      ${desc || ""}`),
   });
-  const page = await browser.newPage();
-  await page.setViewport({ width: 1280, height: 900 });
-
-  const siteMap = {};
-  const seen = new Set();
-  const queue = [{ url: normalize(startUrl, startUrl), depth: 0 }];
-
-  while (queue.length && Object.keys(siteMap).length < MAX_PAGES) {
-    const { url, depth } = queue.shift();
-    if (!url || seen.has(url)) continue;
-    seen.add(url);
-
-    try {
-      await page.goto(url, { waitUntil: "networkidle2", timeout: 20000 });
-      await new Promise((r) => setTimeout(r, 600)); // let late JS render
-      const html = await page.content();
-      siteMap[url] = describe(html);
-      console.log(`  ✓ ${url}\n      ${siteMap[url]}`);
-
-      if (depth < MAX_DEPTH) {
-        const links = await page.$$eval("a[href]", (as) => as.map((a) => a.getAttribute("href")));
-        for (const href of links) {
-          const n = normalize(href, url);
-          if (n && !seen.has(n)) queue.push({ url: n, depth: depth + 1 });
-        }
-      }
-    } catch (err) {
-      console.warn(`  ✗ ${url} — ${err.message}`);
-    }
-  }
-
-  await browser.close();
 
   // Per-client map lives in sitemaps/<clientId>.json; the demo uses sitemap.json.
   let outPath;
