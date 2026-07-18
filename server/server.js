@@ -40,9 +40,31 @@ const DEFAULT_CONFIG = {
   primaryColor: "#4f46e5",
   botName: "NaviNate Assistant",
   aggressiveness: "autonomous", // "suggestive" | "autonomous"
+  companyWebsiteUrl: "", // the client's site (used by the scraper to build their site map)
 };
 const CONFIG_TTL_MS = 60 * 1000;
 const configCache = new Map();
+
+// Base44 returns the client's settings in snake_case:
+//   { brand_color, system_prompt, aggressiveness, company_website_url }
+// Map those onto our internal camelCase config. We also accept the camelCase
+// names directly, so either shape works.
+function mapClientConfig(raw) {
+  if (!raw || typeof raw !== "object") return {};
+  const pick = (...keys) => keys.map((k) => raw[k]).find((v) => v != null && v !== "");
+  const out = {};
+  const systemPrompt = pick("system_prompt", "systemPrompt");
+  const primaryColor = pick("brand_color", "primaryColor");
+  const aggressiveness = pick("aggressiveness");
+  const companyWebsiteUrl = pick("company_website_url", "companyWebsiteUrl");
+  const botName = pick("bot_name", "botName");
+  if (systemPrompt != null) out.systemPrompt = systemPrompt;
+  if (primaryColor != null) out.primaryColor = primaryColor;
+  if (aggressiveness != null) out.aggressiveness = aggressiveness;
+  if (companyWebsiteUrl != null) out.companyWebsiteUrl = companyWebsiteUrl;
+  if (botName != null) out.botName = botName;
+  return out;
+}
 
 async function getClientConfig(clientId) {
   const cached = configCache.get(clientId);
@@ -51,9 +73,18 @@ async function getClientConfig(clientId) {
   let config = { ...DEFAULT_CONFIG };
   if (BASE44_URL && clientId) {
     try {
-      const res = await fetch(`${BASE44_URL}/api/config?clientId=${encodeURIComponent(clientId)}`);
-      if (res.ok) config = { ...config, ...(await res.json()) };
-      else console.warn(`config fetch for ${clientId} returned ${res.status}`);
+      // Base44 serves deployed functions under /functions/<name>.
+      const res = await fetch(`${BASE44_URL}/functions/config?clientId=${encodeURIComponent(clientId)}`);
+      const body = await res.text();
+      if (!res.ok) {
+        console.warn(`config fetch for ${clientId} returned ${res.status}`);
+      } else {
+        try {
+          config = { ...config, ...mapClientConfig(JSON.parse(body)) };
+        } catch {
+          console.warn(`config for ${clientId} was not JSON (check BASE44_URL): ${body.slice(0, 40)}…`);
+        }
+      }
     } catch (err) {
       console.warn("config fetch failed:", err.message);
     }
@@ -62,13 +93,18 @@ async function getClientConfig(clientId) {
   return config;
 }
 
-// Fire-and-forget analytics back into the Base44 dashboard.
+// Fire-and-forget analytics back into the Base44 dashboard. The function lives at
+// /functions/analytics and requires an "action" field in the payload.
 function sendAnalytics(clientId, payload) {
   if (!BASE44_URL || !clientId) return;
-  fetch(`${BASE44_URL}/api/analytics?clientId=${encodeURIComponent(clientId)}`, {
+  fetch(`${BASE44_URL}/functions/analytics?clientId=${encodeURIComponent(clientId)}`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ ...payload, ts: new Date().toISOString() }),
+    body: JSON.stringify({
+      action: payload.type || payload.event || "event", // required by the endpoint
+      ...payload,
+      ts: new Date().toISOString(),
+    }),
   }).catch((err) => console.warn("analytics failed:", err.message));
 }
 
@@ -76,12 +112,23 @@ function sendAnalytics(clientId, payload) {
 // Optional site map produced by the scraper (scraper/scrape.js).
 // Gives the agent a bird's-eye view so it can navigate to the right subpage.
 // ---------------------------------------------------------------------------
-function loadSiteMap() {
-  try {
-    const p = path.join(__dirname, "..", "scraper", "sitemap.json");
-    if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, "utf8"));
-  } catch (err) {
-    console.warn("could not load sitemap.json:", err.message);
+// widget.js can be embedded on many different client sites, so each client has
+// its OWN site map: scraper/sitemaps/<clientId>.json (built with
+// `node scrape.js <that client's URL> --client <clientId>`). We load the map that
+// matches the request's clientId, falling back to the shared sitemap.json (the
+// local demo / single-tenant setups).
+function loadSiteMap(clientId) {
+  const scraperDir = path.join(__dirname, "..", "scraper");
+  const safeId = String(clientId || "").replace(/[^a-zA-Z0-9_-]/g, ""); // no path traversal
+  const candidates = [];
+  if (safeId) candidates.push(path.join(scraperDir, "sitemaps", `${safeId}.json`));
+  candidates.push(path.join(scraperDir, "sitemap.json"));
+  for (const p of candidates) {
+    try {
+      if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, "utf8"));
+    } catch (err) {
+      console.warn(`could not load ${path.basename(p)}:`, err.message);
+    }
   }
   return null;
 }
@@ -134,16 +181,19 @@ const BROWSER_ACTION_TOOL = {
   },
 };
 
-function buildSystemPrompt(config) {
-  const siteMap = loadSiteMap();
+function buildSystemPrompt(config, clientId) {
+  const siteMap = loadSiteMap(clientId);
   const siteMapBlock = siteMap
     ? `\n\nKNOWN SITE MAP (url -> description) — use "navigate" to jump straight to the right page when the user's goal clearly lives elsewhere:\n${JSON.stringify(
         siteMap
       ).slice(0, 4000)}`
     : "";
 
+  // Base44 sends values like "fully_autonomous" / "suggestive". Anything that
+  // isn't a "suggest…" mode is treated as autonomous.
+  const isSuggestive = String(config.aggressiveness || "").toLowerCase().includes("suggest");
   const aggression =
-    config.aggressiveness === "suggestive"
+    isSuggestive
       ? "MODE: Suggestive. Prefer to guide the user — use \"highlight\" to point at the right element and explain it, and only \"click\" for clearly safe, low-stakes navigation. Never complete a purchase or submit a form without the user explicitly confirming."
       : "MODE: Autonomous. You may click, type, scroll, and navigate on the user's behalf to accomplish their goal. Still use \"highlight\" (not click) for the final irreversible step (placing an order, submitting payment) unless the user has clearly told you to complete it.";
 
@@ -192,8 +242,8 @@ WHEN TO STOP (important — avoid loops):
 // the current user turn (message + live DOM snapshot). We deliberately keep history as
 // plain text (no tool_call blocks) so every request is self-contained and valid — the
 // live pageElements carry the state.
-function buildMessages(config, history, userMessage, pageElements, pageText) {
-  const messages = [{ role: "system", content: buildSystemPrompt(config) }];
+function buildMessages(config, history, userMessage, pageElements, pageText, clientId) {
+  const messages = [{ role: "system", content: buildSystemPrompt(config, clientId) }];
   for (const m of Array.isArray(history) ? history.slice(-12) : []) {
     if (!m || typeof m.content !== "string" || !m.content.trim()) continue;
     if (m.role !== "user" && m.role !== "assistant") continue;
@@ -218,12 +268,15 @@ function buildMessages(config, history, userMessage, pageElements, pageText) {
 app.get("/health", (_req, res) => res.json({ ok: true, model: MODEL }));
 
 // The widget fetches its theme/name here so it can style itself before chatting.
+// The scraper can also read companyWebsiteUrl from here (a cached proxy to Base44)
+// so it knows which site to crawl for a given clientId.
 app.get("/config", async (req, res) => {
   const config = await getClientConfig(req.query.clientId || "");
   res.json({
     primaryColor: config.primaryColor,
     botName: config.botName,
     aggressiveness: config.aggressiveness,
+    companyWebsiteUrl: config.companyWebsiteUrl,
   });
 });
 
@@ -249,7 +302,7 @@ app.post("/chat", async (req, res) => {
       tools: [BROWSER_ACTION_TOOL],
       tool_choice: "auto",
       parallel_tool_calls: false, // one action per response — the widget acts one step at a time
-      messages: buildMessages(config, history, message, pageElements, pageText),
+      messages: buildMessages(config, history, message, pageElements, pageText, clientId),
     });
 
     const choice = completion.choices[0];

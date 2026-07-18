@@ -27,12 +27,14 @@
 
   // ---- session state (survives page navigations the agent triggers) --------
   const SS = window.sessionStorage;
-  // Reset the conversation on every page load. The ONE exception is a reload the
-  // agent itself triggered mid-task (it sets navinate.continue right before it
-  // navigates) — that state is preserved so it can finish the goal across pages.
+  // The conversation (history + panel open state) persists across page loads for
+  // the whole tab session, so the assistant never "resets" when the page changes —
+  // whether the agent navigated, the user clicked a link, or a button redirected.
+  // When the navigation wasn't an agent continuation (no navinate.continue flag),
+  // we only drop the MID-TASK flags: any in-flight goal ends, but the chat stays.
   const isContinuation = SS.getItem("navinate.continue") === "1";
   if (!isContinuation) {
-    ["history", "open", "autoSteps", "recentSigs", "continue", "navNotice", "acting"].forEach((k) =>
+    ["autoSteps", "recentSigs", "continue", "navNotice", "acting"].forEach((k) =>
       SS.removeItem("navinate." + k)
     );
   }
@@ -558,11 +560,23 @@
 
     if (type === "click") {
       await flashClick(node);
+      // A click can navigate asynchronously — an <a href>, a form submit, or a JS
+      // redirect. While the old document is still alive, window.location.href hasn't
+      // changed yet, so a same-tick location poll wrongly concludes "didn't move"
+      // and clears the continuation flag right before the page unloads — which reset
+      // the whole session. Instead, arm continuation up front and watch for the page
+      // actually starting to unload; only disarm if it's clearly staying put.
       const before = window.location.href;
-      armContinuation(reason); // a click may navigate (e.g. an <a>)
+      let leaving = false;
+      const onLeave = () => { leaving = true; };
+      window.addEventListener("pagehide", onLeave);
+      window.addEventListener("beforeunload", onLeave);
+      armContinuation(reason);
       realClick(node);
-      await sleep(150);
-      const navigated = window.location.href !== before;
+      await sleep(400); // give a redirect time to begin unloading
+      window.removeEventListener("pagehide", onLeave);
+      window.removeEventListener("beforeunload", onLeave);
+      const navigated = leaving || window.location.href !== before;
       if (!navigated) disarmContinuation();
       return { navigated, label, executed: true };
     }
