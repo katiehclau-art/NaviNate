@@ -85,25 +85,49 @@ The crawler renders JS with Puppeteer, so the nav (which `assets/site.js` builds
 real `<a href>` links) is fully discoverable; deep-linked filter variants like
 `?type=enterprise` are captured too.
 
+### Multiple client sites
+
+`widget.js` is embedded on many client sites, so each client (tenant) gets its **own**
+site map, keyed by the `clientId` in their `<script>` tag. Build a client's map with
+`--client <id>` — the URL is looked up automatically from Base44
+(`GET /functions/config?clientId=<id>` → `company_website_url`):
+
+```bash
+node scrape.js --client acme            # URL pulled from Base44
+node scrape.js https://acme.com --client acme   # or pass the URL explicitly
+```
+
+This writes `scraper/sitemaps/<clientId>.json`. On each `/chat`, the backend loads the
+map matching the request's `clientId`, falling back to the shared `sitemap.json`. The
+scraper finds `BASE44_URL` from `--base44`, the environment, or `server/.env`.
+
 ---
 
 ## The Base44 ↔ local contract
 
-The backend expects these two endpoints on your Base44 app (`BASE44_URL`):
+The backend expects these two endpoints on your Base44 app (`BASE44_URL`). Base44
+serves deployed functions under `/functions/<name>`:
 
-**`GET /api/config?clientId=<id>` → JSON**
+**`GET /functions/config?clientId=<id>` → JSON** (per-client customization)
 ```json
 {
-  "systemPrompt": "You are a helpful sales assistant. Never offer discounts over 10%.",
-  "primaryColor": "#e11d48",
-  "botName": "Acme Helper",
-  "aggressiveness": "autonomous"
+  "brand_color": "#e11d48",
+  "system_prompt": "You are a helpful sales assistant. Never offer discounts over 10%.",
+  "aggressiveness": "autonomous",
+  "company_website_url": "https://acme.com"
 }
 ```
+- `brand_color` — themes the widget (accent color, launcher, buttons).
+- `system_prompt` — the client's instructions, spliced into the agent's system prompt.
 - `aggressiveness`: `"autonomous"` (bot clicks things itself) or `"suggestive"` (bot
   highlights + explains, and won't complete purchases without confirmation).
+- `company_website_url` — the client's site; the scraper reads this to know which
+  site to crawl (`node scrape.js --client <id>`).
 
-**`POST /api/analytics?clientId=<id>`** — body like:
+Field names are snake_case as above; the backend also accepts the camelCase
+equivalents (`systemPrompt`, `primaryColor`, `companyWebsiteUrl`).
+
+**`POST /functions/analytics?clientId=<id>`** — body like:
 ```json
 { "event": "action_taken", "type": "click", "target": "42", "reason": "Opening the Laptops category", "time_saved_seconds": 12 }
 ```
