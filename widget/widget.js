@@ -487,6 +487,7 @@
       scrollX: window.scrollX,
       scrollY: window.scrollY,
       entries: [],
+      appState: captureAppUndoState(),
     };
     persist();
     renderUndo();
@@ -663,7 +664,11 @@
     const draft = state.undoDraft;
     if (!draft) return;
     const changedPage = window.location.href !== draft.startUrl;
-    if (draft.entries.length || changedPage) state.lastUndo = draft;
+    const currentAppState = captureAppUndoState();
+    const appChanged =
+      draft.appState != null &&
+      JSON.stringify(draft.appState) !== JSON.stringify(currentAppState);
+    if (draft.entries.length || changedPage || appChanged) state.lastUndo = draft;
     state.undoDraft = null;
     persist();
     renderUndo();
@@ -680,9 +685,13 @@
     try {
       if (window.location.href !== transaction.startUrl) {
         SS.setItem("navinate.undoNotice", `Undid: ${transaction.command}`);
+        if (transaction.appState != null) {
+          SS.setItem("navinate.undoAppState", JSON.stringify(transaction.appState));
+        }
         window.location.href = transaction.startUrl;
         return;
       }
+      restoreAppUndoState(transaction.appState);
       for (const entry of [...transaction.entries].reverse()) {
         const node = entry.targetId ? findByAgentId(entry.targetId) : null;
         if (entry.kind === "scroll") {
@@ -706,6 +715,31 @@
     } finally {
       busy = false;
       renderUndo();
+    }
+  }
+
+  // Host applications can opt into undo for state that is not represented by a
+  // form control (cart contents, saved filters, configurator state, etc.). The
+  // adapter must return JSON-serializable state and restore that same shape.
+  function captureAppUndoState() {
+    try {
+      const adapter = window.NaviNateUndo;
+      return adapter && typeof adapter.capture === "function"
+        ? adapter.capture()
+        : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function restoreAppUndoState(snapshot) {
+    try {
+      const adapter = window.NaviNateUndo;
+      if (snapshot != null && adapter && typeof adapter.restore === "function") {
+        adapter.restore(snapshot);
+      }
+    } catch (err) {
+      console.warn("[NaviNate] Host undo adapter failed:", err);
     }
   }
 
@@ -991,6 +1025,11 @@
     if (theme.enabled === false) return;
     if (Number.isFinite(theme.maxAutoSteps)) MAX_AUTO_STEPS = theme.maxAutoSteps;
     buildUI();
+    const pendingAppUndo = SS.getItem("navinate.undoAppState");
+    if (pendingAppUndo) {
+      SS.removeItem("navinate.undoAppState");
+      try { restoreAppUndoState(JSON.parse(pendingAppUndo)); } catch (_) { /* ignore stale state */ }
+    }
     const undoNotice = SS.getItem("navinate.undoNotice");
     if (undoNotice) {
       SS.removeItem("navinate.undoNotice");
