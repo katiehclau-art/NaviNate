@@ -208,6 +208,15 @@
         tag: node.tagName.toLowerCase(),
         type: node.getAttribute("type") || undefined,
         text: own,
+        value: node.value || undefined,
+        options:
+          node.tagName === "SELECT"
+            ? Array.from(node.options).map((option) => ({
+                label: option.text.trim(),
+                value: option.value,
+                disabled: option.disabled || undefined,
+              }))
+            : undefined,
         context: ctx || undefined,
         href: node.getAttribute("href") || undefined,
         active: isActive(node) || undefined, // a filter/tab/toggle that's already applied
@@ -399,6 +408,7 @@
     const l = label ? ` "${label}"` : "";
     const why = action.reason ? ` (${action.reason})` : "";
     if (action.action === "type") return `Typed "${action.value || ""}" into${l || " the field"}.${why}`;
+    if (action.action === "select") return `Selected "${action.value || ""}" in${l || " the dropdown"}.${why}`;
     if (action.action === "navigate") return `Navigated to ${label || action.url || "another page"}.${why}`;
     return `Did ${action.action}${l}.${why}`;
   }
@@ -453,6 +463,31 @@
       await typeInto(node, value || "");
       disarmContinuation();
       return { navigated: false, label, executed: true };
+    }
+
+    if (type === "select" && node.tagName === "SELECT") {
+      const requested = String(value || "");
+      const option = Array.from(node.options).find(
+        (candidate) =>
+          !candidate.disabled &&
+          (candidate.value === requested || candidate.text.trim() === requested)
+      );
+      if (!option) return skip;
+
+      node.focus();
+      const setter = Object.getOwnPropertyDescriptor(
+        window.HTMLSelectElement.prototype,
+        "value"
+      ).set;
+      setter.call(node, option.value);
+      node.dispatchEvent(new Event("input", { bubbles: true }));
+      node.dispatchEvent(new Event("change", { bubbles: true }));
+      disarmContinuation();
+      return {
+        navigated: false,
+        label: `${label}: ${option.text.trim()}`,
+        executed: true,
+      };
     }
 
     if (type === "scroll") {
