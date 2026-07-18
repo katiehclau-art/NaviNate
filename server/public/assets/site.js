@@ -198,6 +198,20 @@
     updateCartBadge,
   };
 
+  // Optional NaviNate SDK undo adapter. The widget handles ordinary form
+  // controls itself; the host supplies snapshot/restore hooks for application
+  // state such as this localStorage-backed cart.
+  window.NaviNateUndo = {
+    capture() {
+      return { cart: getCart() };
+    },
+    restore(snapshot) {
+      if (!snapshot || !Array.isArray(snapshot.cart)) return;
+      setCart(snapshot.cart);
+      toast("Undid the last NaviNate command");
+    },
+  };
+
   // ---- hash-target highlight ----
   // Nav dropdown items like Solutions > Finance or Support > Docs link to an
   // in-page #id. Jumping there via the bare browser anchor is easy to miss, so
