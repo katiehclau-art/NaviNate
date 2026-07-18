@@ -52,7 +52,7 @@
     // during this so the user can watch the cursor, then pop it back open to answer.
     acting: SS.getItem("navinate.acting") === "1",
   };
-  const MAX_AUTO_STEPS = 8; // safety cap on agent-driven steps per goal
+  let MAX_AUTO_STEPS = 8; // safety cap on agent-driven steps per goal (overridable via config)
   const RECENT_SIGS_MAX = 5; // how many past actions the loop guard remembers
   const MAX_REPEAT_STRIKES = 3; // how many "you already did that" nudges before giving up
   function persist() {
@@ -62,7 +62,46 @@
     SS.setItem("navinate.recentSigs", JSON.stringify(state.recentSigs));
   }
 
-  let theme = { primaryColor: "#4f46e5", botName: "NaviNate Assistant" };
+  // Client-configurable theme/behavior (fetched from the backend /config, which
+  // proxies Base44). Defaults here keep the widget working if that fetch fails.
+  let theme = {
+    primaryColor: "#4f46e5",
+    botName: "NaviNate Assistant",
+    launcherIcon: "🧭",
+    welcomeMessage: "Hi! I can explore this site and click through it for you. What are you trying to do?",
+    suggestedPrompts: [],
+    widgetPosition: "bottom-right",
+    maxAutoSteps: 8,
+    enabled: true,
+  };
+
+  // ---- analytics identity + reporter --------------------------------------
+  // visitorId: durable across sessions (localStorage) → unique-user counts.
+  // sessionId: per tab session (sessionStorage) → engagement/adoption rate.
+  const LS = window.localStorage;
+  function uid() {
+    return (Date.now().toString(36) + Math.random().toString(36).slice(2, 10));
+  }
+  let visitorId, sessionId;
+  try {
+    visitorId = LS.getItem("navinate.vid") || uid();
+    LS.setItem("navinate.vid", visitorId);
+  } catch { visitorId = uid(); }
+  sessionId = SS.getItem("navinate.sid") || uid();
+  SS.setItem("navinate.sid", sessionId);
+
+  // Fire-and-forget engagement event to the backend (which forwards to Base44).
+  // keepalive lets events sent right before a navigation still go out.
+  function track(event, extra) {
+    try {
+      fetch(BACKEND + "/analytics", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ clientId: CLIENT_ID, event, visitorId, sessionId, url: location.href, ...extra }),
+        keepalive: true,
+      }).catch(() => {});
+    } catch (_) { /* never let analytics break the widget */ }
+  }
 
   // ---- tiny DOM helpers ----------------------------------------------------
   const el = (tag, props = {}, styles = {}) => {
@@ -74,7 +113,7 @@
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
   // ---- build the UI --------------------------------------------------------
-  let root, panel, log, input, sendBtn, launcher, cursor, cursorCaption, statusEl;
+  let root, panel, log, input, sendBtn, launcher, cursor, cursorCaption, statusEl, suggestionsEl;
 
   function buildUI() {
     root = el("div", { id: "navinate-root" });
@@ -85,11 +124,14 @@
     style.textContent = css();
     root.appendChild(style);
 
+    // Position (bottom-right default; bottom-left if the client configured it).
+    if (theme.widgetPosition === "bottom-left") root.classList.add("nn-left");
+
     // Launcher bubble
     launcher = el("button", {
       className: "nn-launcher",
       title: "Ask " + theme.botName,
-      innerHTML: "🧭",
+      innerHTML: escapeHtml(theme.launcherIcon || "🧭"),
     });
     launcher.onclick = toggle;
     root.appendChild(launcher);
@@ -98,11 +140,12 @@
     panel = el("div", { className: "nn-panel" });
     panel.innerHTML = `
       <div class="nn-header">
-        <span class="nn-title">🧭 ${escapeHtml(theme.botName)}</span>
+        <span class="nn-title">${escapeHtml(theme.launcherIcon || "🧭")} ${escapeHtml(theme.botName)}</span>
         <button class="nn-min" title="Minimize" aria-label="Minimize">–</button>
       </div>
       <div class="nn-log"></div>
       <div class="nn-status"></div>
+      <div class="nn-suggestions"></div>
       <div class="nn-inputbar">
         <input class="nn-input" type="text" placeholder="Ask me to find or do something…" />
         <button class="nn-send">➤</button>
@@ -113,6 +156,7 @@
     input = panel.querySelector(".nn-input");
     sendBtn = panel.querySelector(".nn-send");
     statusEl = panel.querySelector(".nn-status");
+    suggestionsEl = panel.querySelector(".nn-suggestions");
     panel.querySelector(".nn-min").onclick = closePanel;
 
     sendBtn.onclick = () => submit();
@@ -134,10 +178,32 @@
     if (state.open) openPanel();
     else if (state.history.length === 0) {
       // First-ever load: greet.
-      const greeting = "Hi! I can explore this site and click through it for you. What are you trying to do?";
-      addBubble("assistant", greeting);
-      state.history.push({ role: "assistant", content: greeting });
+      addBubble("assistant", theme.welcomeMessage);
+      state.history.push({ role: "assistant", content: theme.welcomeMessage });
       persist();
+    }
+    renderSuggestions();
+  }
+
+  // Client-configured starter chips. Shown until the visitor sends their first
+  // message (then hidden to save space). Clicking one sends it as a goal.
+  function renderSuggestions() {
+    if (!suggestionsEl) return;
+    const prompts = Array.isArray(theme.suggestedPrompts) ? theme.suggestedPrompts : [];
+    const alreadyChatting = state.history.some((m) => m.role === "user");
+    suggestionsEl.innerHTML = "";
+    if (!prompts.length || alreadyChatting) {
+      suggestionsEl.style.display = "none";
+      return;
+    }
+    suggestionsEl.style.display = "flex";
+    for (const p of prompts.slice(0, 6)) {
+      const chip = el("button", { className: "nn-chip", textContent: p });
+      chip.onclick = () => {
+        input.value = p;
+        submit();
+      };
+      suggestionsEl.appendChild(chip);
     }
   }
 
@@ -151,6 +217,12 @@
     persist();
     input && input.focus();
     log.scrollTop = log.scrollHeight;
+    // Count each session's first open — the numerator for "% of visitors who
+    // actually engage the assistant".
+    if (SS.getItem("navinate.opened") !== "1") {
+      SS.setItem("navinate.opened", "1");
+      track("widget_opened");
+    }
   }
   function closePanel() {
     state.open = false;
@@ -397,6 +469,9 @@
     state.recentSigs = []; // ...and the loop guard, so a fresh goal may repeat a prior action
     state.repeatStrikes = 0;
     persist();
+    renderSuggestions(); // hide the starter chips now that they're chatting
+    // The message text lets the dashboard surface common questions/issues.
+    track("message_sent", { message: text });
     await runTurn(text);
   }
 
@@ -407,6 +482,7 @@
     if (busy) return;
     busy = true;
     let msg = userMessage;
+    let stuck = false; // did the goal end by giving up / hitting the cap? (an "issue")
     try {
       for (;;) {
         setStatus(state.autoSteps === 0 ? "Thinking…" : "Working…");
@@ -456,12 +532,14 @@
           persist();
           if (state.repeatStrikes >= MAX_REPEAT_STRIKES) {
             addBubble("assistant", "I seem to be stuck — could you rephrase or point me in the right direction?");
+            stuck = true;
             break;
           }
           state.autoSteps++;
           persist();
           if (state.autoSteps >= MAX_AUTO_STEPS) {
             addBubble("assistant", "I've taken several steps — let me know if you'd like me to keep going.");
+            stuck = true;
             break;
           }
           msg = ""; // let the model reconsider against the updated page
@@ -494,6 +572,7 @@
         persist();
         if (state.autoSteps >= MAX_AUTO_STEPS) {
           addBubble("assistant", "I've taken several steps — let me know if you'd like me to keep going.");
+          stuck = true;
           break;
         }
 
@@ -501,8 +580,13 @@
         await sleep(450);
       }
       // Loop finished with a text answer (not a navigation) — pop back open to show it.
+      const didAct = state.acting;
       exitActingMode();
       setStatus("");
+      // Report the outcome so the dashboard can chart resolution vs. common issues.
+      if (stuck) track("goal_stuck", { steps: state.autoSteps });
+      else track("goal_completed", { steps: state.autoSteps });
+      attachFeedback(); // let the visitor rate the answer (CSAT)
     } catch (err) {
       console.error("[NaviNate]", err);
       hideCursorCaption(0);
@@ -512,6 +596,29 @@
     } finally {
       busy = false;
     }
+  }
+
+  // Append 👍/👎 to the last assistant message so visitors can rate the outcome.
+  // Fires a "feedback" event (CSAT signal) and can only be answered once.
+  function attachFeedback() {
+    const bubbles = log.querySelectorAll(".nn-assistant");
+    const last = bubbles[bubbles.length - 1];
+    if (!last || last.querySelector(".nn-feedback") || last.dataset.nnFeedback) return;
+    last.dataset.nnFeedback = "1";
+    const answer = last.textContent || "";
+    const row = el("div", { className: "nn-feedback" });
+    const mk = (icon, value) => {
+      const b = el("button", { className: "nn-fb-btn", title: value, innerHTML: icon });
+      b.onclick = () => {
+        track("feedback", { value, message: answer.slice(0, 300) });
+        row.innerHTML = '<span class="nn-fb-thanks">Thanks for the feedback!</span>';
+      };
+      return b;
+    };
+    row.appendChild(mk("👍", "up"));
+    row.appendChild(mk("👎", "down"));
+    last.appendChild(row);
+    log.scrollTop = log.scrollHeight;
   }
 
   // Human-readable note of an action, stored in history as the model's memory.
@@ -756,7 +863,14 @@
 
   async function boot() {
     await loadTheme();
+    // Master kill switch: a client can disable the widget without removing the
+    // <script> tag. Bail before building any UI.
+    if (theme.enabled === false) return;
+    if (Number.isFinite(theme.maxAutoSteps)) MAX_AUTO_STEPS = theme.maxAutoSteps;
     buildUI();
+    // Count genuine page loads where the widget is present (the denominator for
+    // adoption %). Skip agent-driven reloads so they don't inflate page views.
+    if (!state.pendingContinue) track("widget_loaded");
     // If the agent navigated us here mid-task, keep going automatically.
     if (state.pendingContinue) {
       disarmContinuation();
@@ -811,6 +925,10 @@
     .nn-launcher:hover { transform: scale(1.06); }
     .nn-hidden { display: none !important; }
 
+    /* bottom-left placement when the client configures widget_position */
+    #navinate-root.nn-left .nn-launcher,
+    #navinate-root.nn-left .nn-panel { right: auto; left: 22px; }
+
     .nn-panel {
       position: fixed; right: 22px; bottom: 22px; z-index: 2147483000;
       width: 380px; max-width: calc(100vw - 32px); height: 560px; max-height: calc(100vh - 44px);
@@ -861,6 +979,24 @@
     .nn-input { flex: 1; border: 1px solid #dcdce6; border-radius: 12px; padding: 11px 13px; font-size: 14px; outline: none; }
     .nn-input:focus { border-color: var(--nn-accent); }
     .nn-send { border: none; background: var(--nn-accent); color: #fff; border-radius: 12px; width: 44px; font-size: 16px; cursor: pointer; }
+
+    /* suggested-prompt starter chips */
+    .nn-suggestions { display: flex; flex-wrap: wrap; gap: 7px; padding: 0 12px 4px; background: #fff; }
+    .nn-chip {
+      border: 1px solid var(--nn-accent); background: #fff; color: var(--nn-accent);
+      border-radius: 16px; padding: 6px 12px; font-size: 12.5px; cursor: pointer; line-height: 1.2;
+      transition: background .12s ease, color .12s ease;
+    }
+    .nn-chip:hover { background: var(--nn-accent); color: #fff; }
+
+    /* thumbs-up/down feedback under an answer */
+    .nn-feedback { display: flex; gap: 6px; margin-top: 8px; align-items: center; }
+    .nn-fb-btn {
+      border: 1px solid #e2e4ee; background: #fff; border-radius: 8px; padding: 2px 8px;
+      font-size: 14px; cursor: pointer; line-height: 1.4;
+    }
+    .nn-fb-btn:hover { border-color: var(--nn-accent); background: #f5f7ff; }
+    .nn-fb-thanks { font-size: 12px; color: #6b6b7b; font-style: italic; }
 
     .nn-cursor {
       position: fixed; left: 0; top: 0; z-index: 2147483600; pointer-events: none;

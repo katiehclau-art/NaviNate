@@ -114,24 +114,54 @@ serves deployed functions under `/functions/<name>`:
   "brand_color": "#e11d48",
   "system_prompt": "You are a helpful sales assistant. Never offer discounts over 10%.",
   "aggressiveness": "autonomous",
-  "company_website_url": "https://acme.com"
+  "company_website_url": "https://acme.com",
+  "bot_name": "Acme Helper",
+  "welcome_message": "Hi! I'm Acme's assistant — what can I help you find?",
+  "launcher_icon": "🤖",
+  "suggested_prompts": ["Find an EU server", "Compare pricing", "Contact support"],
+  "widget_position": "bottom-right",
+  "max_auto_steps": 8,
+  "enabled": true
 }
 ```
-- `brand_color` — themes the widget (accent color, launcher, buttons).
-- `system_prompt` — the client's instructions, spliced into the agent's system prompt.
-- `aggressiveness`: `"autonomous"` (bot clicks things itself) or `"suggestive"` (bot
-  highlights + explains, and won't complete purchases without confirmation).
-- `company_website_url` — the client's site; the scraper reads this to know which
-  site to crawl (`node scrape.js --client <id>`).
+| Field | Effect |
+|-------|--------|
+| `brand_color` | Widget accent color (launcher, header, buttons, chips). |
+| `system_prompt` | Client's instructions, spliced into the agent's system prompt. |
+| `aggressiveness` | `"autonomous"` / `"fully_autonomous"` (bot acts itself) or `"suggestive"` (highlights + explains, won't complete purchases unprompted). |
+| `company_website_url` | The client's site; the scraper crawls this (`node scrape.js --client <id>`). |
+| `bot_name` | Name shown in the header + launcher tooltip. |
+| `welcome_message` | First greeting bubble. |
+| `launcher_icon` | Emoji on the launcher bubble + header. |
+| `suggested_prompts` | Starter chips shown before the first message (array, or comma/newline string; max 6). |
+| `widget_position` | `"bottom-right"` (default) or `"bottom-left"`. |
+| `max_auto_steps` | Cap on autonomous steps per goal (1–20). |
+| `enabled` | `false` disables the widget without removing the `<script>` tag. |
 
-Field names are snake_case as above; the backend also accepts the camelCase
-equivalents (`systemPrompt`, `primaryColor`, `companyWebsiteUrl`).
+All fields are optional (sensible defaults apply). Names are snake_case as above;
+the backend also accepts the camelCase equivalents (`systemPrompt`, `primaryColor`, …).
 
-**`POST /functions/analytics?clientId=<id>`** — body like:
-```json
-{ "event": "action_taken", "type": "click", "target": "42", "reason": "Opening the Laptops category", "time_saved_seconds": 12 }
-```
-Increment your dashboard's "Actions Automated" / "Time Saved" cards from these.
+**`POST /functions/analytics?clientId=<id>`** — the backend posts one JSON body per
+event. Every event includes `action` (a copy of `event`, since the endpoint requires
+it), `event`, `ts`, and — for widget events — `session_id`, `visitor_id`, and `url`.
+
+| `event` | When | Extra fields | Dashboard use |
+|---------|------|--------------|---------------|
+| `widget_loaded` | Widget shown on a page load | — | Reach / page views (denominator) |
+| `widget_opened` | Visitor opens the panel (once/session) | — | **Adoption %** = opened ÷ loaded |
+| `message_sent` | Visitor sends a message | `message` | Volume + **common questions/issues** (cluster the text) |
+| `action_taken` | Agent performs a browser action | `type`, `target`, `reason`, `time_saved_seconds` | **Actions Automated** / **Time Saved** |
+| `goal_completed` | A goal finished normally | `steps` | Resolution rate |
+| `goal_stuck` | Agent gave up or hit the step cap | `steps` | **Failure/friction rate** (issues to fix) |
+| `feedback` | Visitor clicks 👍/👎 on an answer | `value` (`up`/`down`), `message` | **CSAT** |
+| `error` | Backend/LLM failure during `/chat` | `reason` | Reliability |
+| `chat_reply` | Agent answered in text with no action | — | Q&A volume |
+
+Suggested dashboard cards: **Adoption %** (`widget_opened` sessions ÷ `widget_loaded`
+sessions), **Actions Automated** & **Time Saved** (sum `action_taken`), **Resolution
+rate** (`goal_completed` ÷ `goal_completed`+`goal_stuck`), **CSAT** (👍 ÷ feedback),
+and a **Top questions/issues** list built by clustering `message_sent` text (and
+`goal_stuck` messages). Group by `session_id`/`visitor_id` for per-user rollups.
 
 > If `BASE44_URL` is blank, the backend runs with sensible built-in defaults so you can
 > develop the agent without the dashboard wired up yet.

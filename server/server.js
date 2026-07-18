@@ -39,30 +39,58 @@ const DEFAULT_CONFIG = {
   systemPrompt: "You are a friendly, proactive assistant that helps visitors accomplish their goals on this website.",
   primaryColor: "#4f46e5",
   botName: "NaviNate Assistant",
-  aggressiveness: "autonomous", // "suggestive" | "autonomous"
+  aggressiveness: "autonomous", // "suggestive" | "autonomous" | "fully_autonomous"
   companyWebsiteUrl: "", // the client's site (used by the scraper to build their site map)
+  welcomeMessage: "Hi! I can explore this site and click through it for you. What are you trying to do?",
+  launcherIcon: "🧭", // emoji shown on the launcher bubble + header
+  suggestedPrompts: [], // starter chips shown before the first message, e.g. ["Find an EU server"]
+  widgetPosition: "bottom-right", // "bottom-right" | "bottom-left"
+  maxAutoSteps: 8, // safety cap on autonomous steps per goal
+  enabled: true, // master on/off switch for the widget on the client's site
 };
 const CONFIG_TTL_MS = 60 * 1000;
 const configCache = new Map();
 
-// Base44 returns the client's settings in snake_case:
-//   { brand_color, system_prompt, aggressiveness, company_website_url }
+// Base44 returns the client's settings in snake_case, e.g.
+//   { brand_color, system_prompt, aggressiveness, company_website_url,
+//     welcome_message, launcher_icon, suggested_prompts, widget_position,
+//     max_auto_steps, enabled }
 // Map those onto our internal camelCase config. We also accept the camelCase
 // names directly, so either shape works.
 function mapClientConfig(raw) {
   if (!raw || typeof raw !== "object") return {};
   const pick = (...keys) => keys.map((k) => raw[k]).find((v) => v != null && v !== "");
   const out = {};
-  const systemPrompt = pick("system_prompt", "systemPrompt");
-  const primaryColor = pick("brand_color", "primaryColor");
-  const aggressiveness = pick("aggressiveness");
-  const companyWebsiteUrl = pick("company_website_url", "companyWebsiteUrl");
-  const botName = pick("bot_name", "botName");
-  if (systemPrompt != null) out.systemPrompt = systemPrompt;
-  if (primaryColor != null) out.primaryColor = primaryColor;
-  if (aggressiveness != null) out.aggressiveness = aggressiveness;
-  if (companyWebsiteUrl != null) out.companyWebsiteUrl = companyWebsiteUrl;
-  if (botName != null) out.botName = botName;
+
+  const str = (v) => (v == null ? null : String(v));
+  const set = (key, val) => { if (val != null) out[key] = val; };
+
+  set("systemPrompt", str(pick("system_prompt", "systemPrompt")));
+  set("primaryColor", str(pick("brand_color", "primaryColor")));
+  set("aggressiveness", str(pick("aggressiveness")));
+  set("companyWebsiteUrl", str(pick("company_website_url", "companyWebsiteUrl")));
+  set("botName", str(pick("bot_name", "botName")));
+  set("welcomeMessage", str(pick("welcome_message", "welcomeMessage")));
+  set("launcherIcon", str(pick("launcher_icon", "launcherIcon")));
+  set("widgetPosition", str(pick("widget_position", "widgetPosition")));
+
+  // suggested_prompts: accept a real array, or a comma/newline-separated string.
+  const prompts = pick("suggested_prompts", "suggestedPrompts");
+  if (Array.isArray(prompts)) out.suggestedPrompts = prompts.map(String).filter(Boolean).slice(0, 6);
+  else if (typeof prompts === "string") {
+    out.suggestedPrompts = prompts.split(/[\n,]/).map((s) => s.trim()).filter(Boolean).slice(0, 6);
+  }
+
+  // max_auto_steps: a number, clamped to a sane range.
+  const steps = pick("max_auto_steps", "maxAutoSteps");
+  if (steps != null && !Number.isNaN(Number(steps))) {
+    out.maxAutoSteps = Math.max(1, Math.min(20, Math.round(Number(steps))));
+  }
+
+  // enabled: accept boolean or "true"/"false"/"0"/"1".
+  const enabled = pick("enabled", "is_enabled", "active");
+  if (enabled != null) out.enabled = !(enabled === false || enabled === "false" || enabled === 0 || enabled === "0");
+
   return out;
 }
 
@@ -277,7 +305,34 @@ app.get("/config", async (req, res) => {
     botName: config.botName,
     aggressiveness: config.aggressiveness,
     companyWebsiteUrl: config.companyWebsiteUrl,
+    welcomeMessage: config.welcomeMessage,
+    launcherIcon: config.launcherIcon,
+    suggestedPrompts: config.suggestedPrompts,
+    widgetPosition: config.widgetPosition,
+    maxAutoSteps: config.maxAutoSteps,
+    enabled: config.enabled,
   });
+});
+
+// The widget posts engagement events here (widget_loaded, widget_opened,
+// message_sent, goal_completed, goal_stuck, feedback, …). We forward them to
+// Base44 so the dashboard can chart adoption, common issues, and CSAT. Keeping
+// this server-side means the widget never needs the Base44 URL or any secret.
+app.post("/analytics", (req, res) => {
+  const { clientId = "", event = "", ...rest } = req.body || {};
+  if (event) {
+    const payload = { event };
+    // Only forward a known, size-bounded set of fields.
+    if (rest.message != null) payload.message = String(rest.message).slice(0, 500);
+    if (rest.value != null) payload.value = String(rest.value).slice(0, 100);
+    if (rest.reason != null) payload.reason = String(rest.reason).slice(0, 300);
+    if (rest.sessionId != null) payload.session_id = String(rest.sessionId).slice(0, 64);
+    if (rest.visitorId != null) payload.visitor_id = String(rest.visitorId).slice(0, 64);
+    if (rest.url != null) payload.url = String(rest.url).slice(0, 500);
+    if (rest.steps != null && !Number.isNaN(Number(rest.steps))) payload.steps = Number(rest.steps);
+    sendAnalytics(clientId, payload);
+  }
+  res.json({ ok: true });
 });
 
 // Serve the widget so the client's <script src="https://<ngrok>/widget.js"> works.
@@ -350,6 +405,7 @@ app.post("/chat", async (req, res) => {
     });
   } catch (err) {
     console.error("chat error:", err);
+    sendAnalytics(clientId, { event: "error", reason: String(err.message || err).slice(0, 300) });
     res.status(500).json({
       reply: "Sorry — I hit a snag reaching my brain. Please try again in a moment.",
       actions: [],
