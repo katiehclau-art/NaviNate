@@ -173,15 +173,21 @@
     // Apply theme accent
     root.style.setProperty("--nn-accent", theme.primaryColor);
 
-    // Restore prior conversation + open state
-    for (const m of state.history) addBubble(m.role, m.content, false);
-    if (state.open) openPanel();
-    else if (state.history.length === 0) {
-      // First-ever load: greet.
-      addBubble("assistant", theme.welcomeMessage);
-      state.history.push({ role: "assistant", content: theme.welcomeMessage });
+    // Show the conversation. The greeting reflects the CURRENT welcome message
+    // (which the client can change in Base44), so we NEVER persist it into history —
+    // otherwise the first-ever greeting would get stuck in sessionStorage and later
+    // changes to welcome_message would never show. We render it fresh, from the live
+    // theme, whenever the conversation hasn't actually started yet.
+    const conversationStarted = state.history.some((m) => m.role === "user");
+    if (!conversationStarted && state.history.length) {
+      state.history = []; // drop any stale stored greeting from an earlier load/version
       persist();
     }
+    for (const m of state.history) addBubble(m.role, m.content, false);
+    if (!conversationStarted && theme.welcomeMessage) {
+      addBubble("assistant", theme.welcomeMessage); // ephemeral — not pushed to history
+    }
+    if (state.open) openPanel();
     renderSuggestions();
   }
 
