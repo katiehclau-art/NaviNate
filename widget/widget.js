@@ -377,7 +377,33 @@
   // compact JSON snapshot for the backend to reason over.
   const SELECTOR =
     'a[href], button, input:not([type=hidden]), select, textarea, ' +
-    '[role=button], [role=link], [role=tab], [role=menuitem], [onclick]';
+    '[role=button], [role=link], [role=tab], [role=menuitem], [role=slider], [onclick]';
+
+  // Sliders come in two flavors: native <input type=range> (has real min/max/step/
+  // value) and custom ARIA role="slider" widgets (only the aria-value* attributes).
+  // These helpers read whichever applies so scanDom + performAction share one source.
+  const isRangeInput = (node) => node.tagName === "INPUT" && node.type === "range";
+  const isAriaSlider = (node) => node.getAttribute("role") === "slider";
+  const isSlider = (node) => isRangeInput(node) || isAriaSlider(node);
+  function sliderMin(node) {
+    if (isRangeInput(node)) return node.min || "0"; // browser defaults when unset
+    if (isAriaSlider(node)) return node.getAttribute("aria-valuemin") || undefined;
+    return undefined;
+  }
+  function sliderMax(node) {
+    if (isRangeInput(node)) return node.max || "100";
+    if (isAriaSlider(node)) return node.getAttribute("aria-valuemax") || undefined;
+    return undefined;
+  }
+  function sliderStep(node) {
+    if (isRangeInput(node)) return node.step || "1";
+    return undefined; // ARIA defines no standard step attribute
+  }
+  function sliderValue(node) {
+    if (isRangeInput(node)) return node.value;
+    if (isAriaSlider(node)) return node.getAttribute("aria-valuenow") || undefined;
+    return undefined;
+  }
 
   // Monotonic counter so each DOM element keeps a STABLE data-agent-id across
   // re-scans. This lets the loop guard recognise "same element clicked again"
@@ -414,9 +440,14 @@
       elements.push({
         id: agentId,
         tag: node.tagName.toLowerCase(),
-        type: node.getAttribute("type") || undefined,
+        // ARIA slider widgets aren't <input type=range>, so surface "slider" here
+        // too — it's the model's only cue that a non-native element is one.
+        type: node.getAttribute("type") || (isAriaSlider(node) ? "slider" : undefined),
         text: own,
-        value: node.value || undefined,
+        value: isSlider(node) ? sliderValue(node) : node.value || undefined,
+        min: isSlider(node) ? sliderMin(node) : undefined,
+        max: isSlider(node) ? sliderMax(node) : undefined,
+        step: isSlider(node) ? sliderStep(node) : undefined,
         options:
           node.tagName === "SELECT"
             ? Array.from(node.options).map((option) => ({
@@ -659,6 +690,7 @@
     const why = action.reason ? ` (${action.reason})` : "";
     if (action.action === "type") return `Typed "${action.value || ""}" into${l || " the field"}.${why}`;
     if (action.action === "select") return `Selected "${action.value || ""}" in${l || " the dropdown"}.${why}`;
+    if (action.action === "slider") return `Set${l || " the slider"} to ${action.value}.${why}`;
     if (action.action === "navigate") return `Navigated to ${label || action.url || "another page"}.${why}`;
     return `Did ${action.action}${l}.${why}`;
   }
@@ -750,6 +782,28 @@
         label: `${label}: ${option.text.trim()}`,
         executed: true,
       };
+    }
+
+    if (type === "slider" && isSlider(node)) {
+      const min = parseFloat(sliderMin(node));
+      const max = parseFloat(sliderMax(node));
+      const step = parseFloat(sliderStep(node));
+      let target = parseFloat(value);
+      if (!Number.isFinite(target)) return skip;
+      if (Number.isFinite(min)) target = Math.max(min, target);
+      if (Number.isFinite(max)) target = Math.min(max, target);
+      if (Number.isFinite(min) && Number.isFinite(step) && step > 0) {
+        target = min + Math.round((target - min) / step) * step; // snap to the nearest valid step
+      }
+      target = Math.round(target * 1000) / 1000; // trim floating-point noise
+
+      if (isRangeInput(node)) {
+        await dragRangeInput(node, target, min, max);
+      } else {
+        await dragAriaSlider(node, target, Number.isFinite(step) && step > 0 ? step : 1);
+      }
+      disarmContinuation();
+      return { navigated: false, label: `${label}: ${target}`, executed: true };
     }
 
     if (type === "scroll") {
@@ -869,6 +923,52 @@
       await sleep(35);
     }
     node.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  // Animate a native <input type=range> from its current value to `target`,
+  // dispatching input/change like a real drag so React/Vue controlled sliders
+  // pick it up — and sliding the fake cursor along the track as it goes.
+  async function dragRangeInput(node, target, min, max) {
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, "value").set;
+    const start = parseFloat(node.value);
+    const from = Number.isFinite(start) ? start : target;
+    const rect = node.getBoundingClientRect();
+    const span = Number.isFinite(min) && Number.isFinite(max) && max > min ? max - min : null;
+    const FRAMES = 10;
+    for (let i = 1; i <= FRAMES; i++) {
+      const v = from + ((target - from) * i) / FRAMES;
+      setter.call(node, String(v));
+      node.dispatchEvent(new Event("input", { bubbles: true }));
+      if (span) {
+        const frac = Math.min(1, Math.max(0, (v - min) / span));
+        cursor.style.transform = `translate(${rect.left + frac * rect.width}px, ${rect.top + rect.height / 2}px)`;
+      }
+      await sleep(30);
+    }
+    setter.call(node, String(target));
+    node.dispatchEvent(new Event("input", { bubbles: true }));
+    node.dispatchEvent(new Event("change", { bubbles: true }));
+  }
+
+  // Best-effort mover for custom ARIA role="slider" widgets — there's no native
+  // value setter to call, so nudge it with arrow-key presses, the interaction
+  // every compliant slider widget must support per the WAI-ARIA authoring
+  // practices. Stops once aria-valuenow reaches the target, or as soon as the
+  // widget stops responding (so a non-conformant widget can't hang the loop).
+  async function dragAriaSlider(node, target, step) {
+    node.focus();
+    let current = parseFloat(node.getAttribute("aria-valuenow"));
+    if (!Number.isFinite(current)) return;
+    const maxPresses = 200; // hard safety cap
+    for (let presses = 0; presses < maxPresses && Math.abs(current - target) > step / 2; presses++) {
+      const key = current < target ? "ArrowRight" : "ArrowLeft";
+      node.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true }));
+      node.dispatchEvent(new KeyboardEvent("keyup", { key, bubbles: true, cancelable: true }));
+      await sleep(25);
+      const next = parseFloat(node.getAttribute("aria-valuenow"));
+      if (!Number.isFinite(next) || next === current) break; // not responding to keys; give up
+      current = next;
+    }
   }
 
   function pulseHighlight(node, ms = 1400) {

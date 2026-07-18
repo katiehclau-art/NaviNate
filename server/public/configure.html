@@ -30,6 +30,8 @@
         <select><option>4</option><option>8</option><option>16</option><option>64</option></select></div>
       <div class="field"><label>RAM</label>
         <select><option>16 GB</option><option>64 GB</option><option>256 GB</option></select></div>
+      <div class="field"><label>Storage: <span id="storage-value">500</span> GB</label>
+        <input type="range" id="storage-slider" min="100" max="4000" step="100" value="500" /></div>
     </div>
 
     <div class="tab-panel" data-panel="networking">
@@ -68,6 +70,9 @@
       document.querySelector('.tab-panel[data-panel="' + tab.dataset.tab + '"]').classList.add("active");
     };
   });
+  const storageSlider = document.getElementById("storage-slider");
+  const storageValue = document.getElementById("storage-value");
+  storageSlider.addEventListener("input", () => { storageValue.textContent = storageSlider.value; });
   document.getElementById("place-order").onclick = () => {
     window.Nimbus.addToCart({ name: "Custom configured server", price: null });
     window.Nimbus.toast("Configuration added to cart");
