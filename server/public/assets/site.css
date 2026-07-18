@@ -14,10 +14,17 @@ nav > ul > li { position: relative; }
 nav a { color: #cdd6ea; text-decoration: none; font-size: 14px; cursor: pointer; }
 nav a:hover { color: #fff; }
 nav a.current { color: #fff; font-weight: 600; }
+nav li.has-children { display: flex; align-items: center; gap: 2px; }
+nav .nav-caret { background: transparent; border: none; color: #cdd6ea; font-size: 11px; cursor: pointer; padding: 4px 2px; line-height: 1; }
+nav .nav-caret:hover { color: #fff; }
+nav li.open > .nav-caret { color: #fff; }
+nav > ul > li.open > .nav-caret { transform: rotate(180deg); } /* top-level: ▾ flips to point up when open */
 nav li ul { display: none; position: absolute; top: 24px; left: 0; background: #10294a; padding: 8px 0; border-radius: 8px; min-width: 190px; box-shadow: 0 12px 30px rgba(0,0,0,.3); }
-nav li:hover > ul { display: block; }
-nav li ul li { padding: 7px 16px; white-space: nowrap; }
-nav li ul li ul { top: -8px; left: 100%; }
+nav li.open > ul { display: block; }
+nav li ul li { padding: 7px 16px; white-space: nowrap; position: relative; }
+/* nested flyout (e.g. Cloud's own submenu): offset a couple px to the right with
+   its own shadow so it reads as a distinct tab, not fused to the parent row. */
+nav li ul li ul { top: -8px; left: calc(100% + 6px); box-shadow: -2px 0 0 rgba(255,255,255,.06), 0 12px 30px rgba(0,0,0,.35); }
 .cart { margin-left: auto; }
 .cart a { background: #16305a; padding: 7px 13px; border-radius: 20px; font-size: 13px; color: #fff; text-decoration: none; display: inline-block; }
 .cart a:hover { background: #1d3d6f; }
@@ -49,6 +56,14 @@ aside h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-s
 .btn:hover { background: #245ae0; }
 .btn.secondary { background: #eaf0ff; color: #2f6bff; }
 .btn.secondary:hover { background: #dbe7ff; }
+
+/* ---- hash-target highlight (blue box drawn around a section you jumped to) ---- */
+.nimbus-highlight { border-radius: 12px; animation: nimbus-pulse 1.6s ease-out 2; }
+@keyframes nimbus-pulse {
+  0%   { box-shadow: 0 0 0 3px #2f6bff, 0 0 0 9px rgba(47,107,255,.35); }
+  70%  { box-shadow: 0 0 0 3px #2f6bff, 0 0 0 9px rgba(47,107,255,0); }
+  100% { box-shadow: 0 0 0 3px #2f6bff, 0 0 0 9px rgba(47,107,255,0); }
+}
 
 /* ---- generic content blocks ---- */
 .panel-card { background: #fff; border: 1px solid #e6e9f2; border-radius: 12px; padding: 24px; }
