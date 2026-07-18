@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>System Status — NimbusCore</title>
+<meta name="description" content="Live NimbusCore system status for compute, storage, and telecom across all regions." />
+<link rel="stylesheet" href="/assets/site.css" />
+<style>
+  .status-row { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid #f0f2f8; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; margin-right: 8px; }
+  .ok { background: #22b07d; } .degraded { background: #e0a72f; }
+  .pill { font-size: 12px; padding: 3px 10px; border-radius: 20px; }
+  .pill.ok { background: #e4f6ee; color: #157a56; }
+  .pill.degraded { background: #fbf1dc; color: #8a6413; }
+</style>
+</head>
+<body>
+<div id="site-header"></div>
+<nav class="breadcrumb"><a href="/">Home</a> › <a href="/support.html">Support</a> › Status</nav>
+
+<section class="hero">
+  <h1>System Status</h1>
+  <p>All times UTC. This is demo data — nothing here is real.</p>
+</section>
+
+<main>
+  <div class="panel-card" style="max-width:640px">
+    <div class="status-row"><span><span class="dot ok"></span>Cloud Compute — US-East</span><span class="pill ok">Operational</span></div>
+    <div class="status-row"><span><span class="dot ok"></span>Cloud Compute — EU-Central</span><span class="pill ok">Operational</span></div>
+    <div class="status-row"><span><span class="dot degraded"></span>Cloud Compute — APAC</span><span class="pill degraded">Degraded latency</span></div>
+    <div class="status-row"><span><span class="dot ok"></span>Object Storage</span><span class="pill ok">Operational</span></div>
+    <div class="status-row"><span><span class="dot ok"></span>Telecom / SD-WAN</span><span class="pill ok">Operational</span></div>
+    <div class="status-row" style="border-bottom:none"><span><span class="dot ok"></span>Billing &amp; Dashboard</span><span class="pill ok">Operational</span></div>
+  </div>
+</main>
+
+<footer>NimbusCore — demo site · not a real company</footer>
+<script>window.PAGE = "support";</script>
+<script src="/assets/site.js"></script>
+<script src="/widget.js?clientId=demo"></script>
+</body>
+</html>

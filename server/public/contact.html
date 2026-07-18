@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Contact Support — NimbusCore</title>
+<meta name="description" content="Open a NimbusCore support ticket: choose a topic and priority and describe your issue." />
+<link rel="stylesheet" href="/assets/site.css" />
+</head>
+<body>
+<div id="site-header"></div>
+<nav class="breadcrumb"><a href="/">Home</a> › <a href="/support.html">Support</a> › Contact</nav>
+
+<section class="hero">
+  <h1>Contact Support</h1>
+  <p>Tell us what's going on and we'll get back to you.</p>
+</section>
+
+<main>
+  <div class="panel-card" style="max-width:560px">
+    <form id="ticket" onsubmit="return false">
+      <div class="field"><label>Your email</label>
+        <input type="email" id="email" placeholder="you@company.com" style="width:100%" /></div>
+      <div class="field"><label>Topic</label>
+        <select id="topic" style="width:100%">
+          <option>Billing</option><option>Technical issue</option>
+          <option>Sales question</option><option>Account &amp; access</option>
+        </select></div>
+      <div class="field"><label>Priority</label>
+        <select id="priority" style="width:100%">
+          <option>Low</option><option>Normal</option><option>High</option><option>Urgent</option>
+        </select></div>
+      <div class="field"><label>Message</label>
+        <textarea id="message" placeholder="Describe your issue…"></textarea></div>
+      <button class="btn" id="submit">Submit ticket</button>
+    </form>
+  </div>
+</main>
+
+<footer>NimbusCore — demo site · not a real company</footer>
+<script>window.PAGE = "support";</script>
+<script src="/assets/site.js"></script>
+<script>
+  document.getElementById("submit").onclick = () => {
+    const email = document.getElementById("email").value.trim();
+    if (!email) return window.Nimbus.toast("Please enter your email first");
+    window.Nimbus.toast("Ticket submitted — we'll be in touch");
+  };
+</script>
+<script src="/widget.js?clientId=demo"></script>
+</body>
+</html>

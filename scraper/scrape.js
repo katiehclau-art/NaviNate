@@ -49,12 +49,35 @@ function normalize(href, base) {
 }
 
 // Pull a human description of a page from its title / h1 / meta description.
+// Titles, h1s, and meta descriptions on real sites overlap heavily (and usually
+// repeat the brand name), so we clean and dedupe the segments — the result is a
+// tight one-liner the agent's LLM can actually reason over.
 function describe(html) {
   const $ = cheerio.load(html);
   const title = ($("title").first().text() || "").trim();
   const h1 = ($("h1").first().text() || "").trim();
   const meta = ($('meta[name="description"]').attr("content") || "").trim();
-  const desc = [title, h1, meta].filter(Boolean).join(" — ").slice(0, 200);
+
+  // Brand is whatever trails the last " — " / " | " in the <title> (e.g. "NimbusCore").
+  const brand = (title.split(/\s+[—|]\s+/).pop() || "").trim();
+  const stripBrand = (s) =>
+    brand ? s.replace(new RegExp(`\\s*[—|]\\s*${brand}\\s*$`), "").trim() : s;
+
+  // Keep title/h1/meta, minus the brand suffix, dropping any segment already
+  // contained in one we've kept (case-insensitive) so nothing repeats.
+  const kept = [];
+  for (const raw of [stripBrand(title), stripBrand(h1), meta]) {
+    const seg = raw.trim();
+    if (!seg) continue;
+    const low = seg.toLowerCase();
+    if (kept.some((k) => k.toLowerCase().includes(low))) continue;
+    // If this new segment supersets an existing shorter one, replace it.
+    const supersedes = kept.findIndex((k) => low.includes(k.toLowerCase()));
+    if (supersedes !== -1) kept[supersedes] = seg;
+    else kept.push(seg);
+  }
+
+  const desc = kept.join(" — ").slice(0, 200);
   return desc || "(no description)";
 }
 

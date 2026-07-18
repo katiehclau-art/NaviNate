@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Storage — NimbusCore</title>
+<meta name="description" content="NimbusCore storage tiers: object, block, and archival storage with per-region durability guarantees." />
+<link rel="stylesheet" href="/assets/site.css" />
+</head>
+<body>
+<div id="site-header"></div>
+<nav class="breadcrumb"><a href="/">Home</a> › <a href="/services.html">Services</a> › Storage</nav>
+
+<section class="hero">
+  <h1>Storage</h1>
+  <p>Durable storage tiers for hot data, boot volumes, and long-term archives.</p>
+</section>
+
+<main>
+  <section class="grid" style="grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));">
+    <div class="card">
+      <h4>Object Storage</h4>
+      <span class="tag">Hot</span><span class="tag">11×9s durability</span>
+      <div class="price">$0.021/GB/mo</div>
+      <button class="btn add" data-name="Object Storage" data-price="21">Add to Cart</button>
+    </div>
+    <div class="card">
+      <h4>Block Storage</h4>
+      <span class="tag">SSD</span><span class="tag">Attach to compute</span>
+      <div class="price">$0.09/GB/mo</div>
+      <button class="btn add" data-name="Block Storage" data-price="90">Add to Cart</button>
+    </div>
+    <div class="card">
+      <h4>Archival</h4>
+      <span class="tag">Cold</span><span class="tag">Cheapest</span>
+      <div class="price">$0.004/GB/mo</div>
+      <button class="btn add" data-name="Archival Storage" data-price="4">Add to Cart</button>
+    </div>
+  </section>
+</main>
+
+<footer>NimbusCore — demo site · not a real company</footer>
+<script>window.PAGE = "storage";</script>
+<script src="/assets/site.js"></script>
+<script>
+  document.querySelectorAll(".add").forEach((b) => {
+    b.onclick = () => window.Nimbus.addToCart({ name: b.dataset.name, price: Number(b.dataset.price) });
+  });
+</script>
+<script src="/widget.js?clientId=demo"></script>
+</body>
+</html>

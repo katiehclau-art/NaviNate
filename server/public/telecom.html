@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Telecom — NimbusCore</title>
+<meta name="description" content="NimbusCore telecom: SD-WAN, private connectivity, and global SIP trunking for distributed teams." />
+<link rel="stylesheet" href="/assets/site.css" />
+</head>
+<body>
+<div id="site-header"></div>
+<nav class="breadcrumb"><a href="/">Home</a> › <a href="/services.html">Services</a> › Telecom</nav>
+
+<section class="hero">
+  <h1>Telecom</h1>
+  <p>Connect distributed sites and teams with managed network services.</p>
+</section>
+
+<main>
+  <section class="grid" style="grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));">
+    <div class="card">
+      <h4>Managed SD-WAN</h4>
+      <span class="tag">Networking</span>
+      <div class="price">$149/mo</div>
+      <button class="btn add" data-name="Managed SD-WAN" data-price="149">Add to Cart</button>
+    </div>
+    <div class="card">
+      <h4>Private Connectivity</h4>
+      <span class="tag">Dedicated link</span>
+      <div class="price">$399/mo</div>
+      <button class="btn add" data-name="Private Connectivity" data-price="399">Add to Cart</button>
+    </div>
+    <div class="card">
+      <h4>Global SIP Trunking</h4>
+      <span class="tag">Voice</span>
+      <div class="price">$89/mo</div>
+      <button class="btn add" data-name="Global SIP Trunking" data-price="89">Add to Cart</button>
+    </div>
+  </section>
+</main>
+
+<footer>NimbusCore — demo site · not a real company</footer>
+<script>window.PAGE = "telecom";</script>
+<script src="/assets/site.js"></script>
+<script>
+  document.querySelectorAll(".add").forEach((b) => {
+    b.onclick = () => window.Nimbus.addToCart({ name: b.dataset.name, price: Number(b.dataset.price) });
+  });
+</script>
+<script src="/widget.js?clientId=demo"></script>
+</body>
+</html>

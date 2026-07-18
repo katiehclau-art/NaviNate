@@ -24,7 +24,7 @@ B2B SaaS model: businesses configure their bot in a **Base44 dashboard** and pas
 
 | Folder | What it is |
 |--------|-----------|
-| `server/`  | The **agent brain**. Express + OpenAI SDK. `/chat` takes the user's message + a JSON snapshot of the page's clickable elements and returns actions. Pulls per-client config from Base44 and pushes analytics back. Also serves `widget.js`. |
+| `server/`  | The **agent brain**. Express + OpenAI SDK. `/chat` takes the user's message + a JSON snapshot of the page's clickable elements and returns actions. Pulls per-client config from Base44 and pushes analytics back. Also serves `widget.js` and a **multi-page demo site** (`server/public/` — Home, Cloud, Telecom, Storage, Solutions, Pricing, Configure, Support, Contact, Status, Cart) for testing the agent locally. |
 | `widget/`  | The **embeddable widget** (`widget.js`, vanilla JS). Injects a chat window, scans the DOM, and performs the agent's actions with an animated fake cursor. |
 | `scraper/` | Optional Puppeteer crawler that builds `sitemap.json` — a knowledge base of the site's pages so the agent can jump straight to the right subpage. |
 
@@ -67,14 +67,23 @@ reported to `/api/analytics` so the dashboard charts move live.
 
 ### 4. (Optional) Build the site map
 
+With the backend running (step 1), crawl the bundled multi-page demo site:
+
 ```bash
 cd scraper
 npm install
-node scrape.js https://your-demo-site.base44.app
+node scrape.js http://localhost:3000        # or your live Base44 site URL
 ```
 
-This writes `scraper/sitemap.json`, which the backend loads automatically — the agent
-can then `navigate` straight to the right subpage instead of hunting for it.
+This writes `scraper/sitemap.json` (url → description for every subpage — Cloud,
+Telecom, Storage, Pricing, Configure, Support, etc.), which the backend loads
+automatically and injects into the agent's system prompt. The agent can then
+`navigate` straight to the right subpage — e.g. "I need a hybrid EU server" jumps
+directly to `/cloud.html?type=hybrid` instead of hunting through menus.
+
+The crawler renders JS with Puppeteer, so the nav (which `assets/site.js` builds as
+real `<a href>` links) is fully discoverable; deep-linked filter variants like
+`?type=enterprise` are captured too.
 
 ---
 

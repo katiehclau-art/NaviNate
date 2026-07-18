@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Pricing — NimbusCore</title>
+<meta name="description" content="NimbusCore pricing: compare Starter, Business, and Enterprise plans side by side." />
+<link rel="stylesheet" href="/assets/site.css" />
+</head>
+<body>
+<div id="site-header"></div>
+<nav class="breadcrumb"><a href="/">Home</a> › Pricing</nav>
+
+<section class="hero">
+  <h1>Pricing</h1>
+  <p>Three plans. Annual billing saves 15%. Prices exclude metered storage and egress.</p>
+</section>
+
+<main>
+  <section class="pricing">
+    <div class="plan">
+      <h3>Starter</h3>
+      <div class="amount">$39<span style="font-size:14px;font-weight:500">/mo</span></div>
+      <ul>
+        <li>1 edge node</li>
+        <li>1 region</li>
+        <li>Community support</li>
+        <li>SOC 2 (read-only)</li>
+      </ul>
+      <button class="btn add" data-name="Starter plan" data-price="39">Choose Starter</button>
+    </div>
+    <div class="plan featured">
+      <h3>Business</h3>
+      <div class="amount">$299<span style="font-size:14px;font-weight:500">/mo</span></div>
+      <ul>
+        <li>Up to 8 servers</li>
+        <li>Multi-region</li>
+        <li>Email + chat support</li>
+        <li>HIPAA available</li>
+      </ul>
+      <button class="btn add" data-name="Business plan" data-price="299">Choose Business</button>
+    </div>
+    <div class="plan">
+      <h3>Enterprise</h3>
+      <div class="amount">$999<span style="font-size:14px;font-weight:500">/mo</span></div>
+      <ul>
+        <li>Unlimited servers</li>
+        <li>All regions incl. APAC</li>
+        <li>24/7 priority support</li>
+        <li>FedRAMP + CMK</li>
+      </ul>
+      <button class="btn add" data-name="Enterprise plan" data-price="999">Choose Enterprise</button>
+    </div>
+  </section>
+</main>
+
+<footer>NimbusCore — demo site · not a real company</footer>
+<script>window.PAGE = "pricing";</script>
+<script src="/assets/site.js"></script>
+<script>
+  document.querySelectorAll(".add").forEach((b) => {
+    b.onclick = () => window.Nimbus.addToCart({ name: b.dataset.name, price: Number(b.dataset.price) });
+  });
+</script>
+<script src="/widget.js?clientId=demo"></script>
+</body>
+</html>
