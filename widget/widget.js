@@ -53,6 +53,7 @@
     acting: SS.getItem("navinate.acting") === "1",
     undoDraft: JSON.parse(SS.getItem("navinate.undoDraft") || "null"),
     lastUndo: JSON.parse(SS.getItem("navinate.lastUndo") || "null"),
+    activeGoal: SS.getItem("navinate.activeGoal") || "",
   };
   let MAX_AUTO_STEPS = 8; // safety cap on agent-driven steps per goal (overridable via config)
   const RECENT_SIGS_MAX = 5; // how many past actions the loop guard remembers
@@ -68,6 +69,9 @@
     state.lastUndo
       ? SS.setItem("navinate.lastUndo", JSON.stringify(state.lastUndo))
       : SS.removeItem("navinate.lastUndo");
+    state.activeGoal
+      ? SS.setItem("navinate.activeGoal", state.activeGoal)
+      : SS.removeItem("navinate.activeGoal");
   }
 
   // Client-configurable theme/behavior (fetched from the backend /config, which
@@ -480,6 +484,7 @@
     state.autoSteps = 0; // new user goal resets the step budget
     state.recentSigs = []; // ...and the loop guard, so a fresh goal may repeat a prior action
     state.repeatStrikes = 0;
+    state.activeGoal = text;
     state.lastUndo = null;
     state.undoDraft = {
       command: text,
@@ -503,7 +508,8 @@
   async function runTurn(userMessage) {
     if (busy) return;
     busy = true;
-    let msg = userMessage;
+    const activeGoal = userMessage || state.activeGoal;
+    let msg = userMessage || continueGoalMessage(activeGoal);
     let stuck = false; // did the goal end by giving up / hitting the cap? (an "issue")
     try {
       for (;;) {
@@ -564,7 +570,7 @@
             stuck = true;
             break;
           }
-          msg = ""; // let the model reconsider against the updated page
+          msg = continueGoalMessage(activeGoal);
           await sleep(300);
           continue;
         }
@@ -600,7 +606,7 @@
           break;
         }
 
-        msg = ""; // "" = continue toward the same goal against the updated page
+        msg = continueGoalMessage(activeGoal);
         await sleep(450);
       }
       // Loop finished with a text answer (not a navigation) — pop back open to show it.
@@ -610,6 +616,7 @@
       // Report the outcome so the dashboard can chart resolution vs. common issues.
       if (stuck) track("goal_stuck", { steps: state.autoSteps });
       else track("goal_completed", { steps: state.autoSteps });
+      state.activeGoal = "";
       finishUndoCommand();
       attachFeedback(); // let the visitor rate the answer (CSAT)
     } catch (err) {
@@ -618,11 +625,18 @@
       exitActingMode();
       addBubble("assistant", "Hmm, I couldn't reach my brain just now. Mind trying again?");
       setStatus("");
+      state.activeGoal = "";
       finishUndoCommand();
     } finally {
       busy = false;
       renderUndo();
     }
+  }
+
+  function continueGoalMessage(goal) {
+    return goal
+      ? `(Continue only the current user goal: "${goal}". Do not resume or infer tasks from earlier user commands.)`
+      : "(Check whether the current goal is complete. Do not resume older user commands.)";
   }
 
   function renderUndo() {
@@ -1056,7 +1070,7 @@
       if (state.autoSteps < MAX_AUTO_STEPS) {
         state.autoSteps++;
         persist();
-        runTurn(""); // resume toward the same goal
+        runTurn(state.activeGoal); // resume the exact goal that triggered navigation
       }
     }
   }
