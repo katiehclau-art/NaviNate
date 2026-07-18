@@ -266,6 +266,11 @@
     state.autoSteps = 0;
     state.recentSigs = [];
     state.repeatStrikes = 0;
+    // The undo button rewinds an action from the conversation we're about to wipe —
+    // once the chat is reset there's nothing left to undo it back into.
+    state.undoDraft = null;
+    state.lastUndo = null;
+    state.activeGoal = "";
     exitActingMode();
     disarmContinuation();
     ["autoSteps", "recentSigs", "continue", "navNotice", "acting", "history"].forEach((k) =>
@@ -276,6 +281,7 @@
     setStatus("");
     if (theme.welcomeMessage) addBubble("assistant", theme.welcomeMessage);
     renderSuggestions();
+    renderUndo();
     track("chat_reset");
   }
 
@@ -1202,7 +1208,11 @@
       if (state.autoSteps < MAX_AUTO_STEPS) {
         state.autoSteps++;
         persist();
-        runTurn(state.activeGoal); // resume the exact goal that triggered navigation
+        // "" (not state.activeGoal) so runTurn wraps this as a CONTINUATION via
+        // continueGoalMessage() instead of resending the original command as a
+        // fresh user message — otherwise the model has no signal it already acted
+        // on this goal and re-clicks the same nav link that got it here.
+        runTurn("");
       }
     }
   }
