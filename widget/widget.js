@@ -141,7 +141,10 @@
     panel.innerHTML = `
       <div class="nn-header">
         <span class="nn-title">${escapeHtml(theme.launcherIcon || "🧭")} ${escapeHtml(theme.botName)}</span>
-        <button class="nn-min" title="Minimize" aria-label="Minimize">–</button>
+        <div class="nn-header-actions">
+          <button class="nn-reset" title="Reset chat" aria-label="Reset chat">↺</button>
+          <button class="nn-min" title="Minimize" aria-label="Minimize">–</button>
+        </div>
       </div>
       <div class="nn-log"></div>
       <div class="nn-status"></div>
@@ -158,6 +161,7 @@
     statusEl = panel.querySelector(".nn-status");
     suggestionsEl = panel.querySelector(".nn-suggestions");
     panel.querySelector(".nn-min").onclick = closePanel;
+    panel.querySelector(".nn-reset").onclick = resetChat;
 
     sendBtn.onclick = () => submit();
     input.addEventListener("keydown", (e) => {
@@ -235,6 +239,28 @@
     panel.classList.remove("nn-open");
     launcher.classList.remove("nn-hidden");
     persist();
+  }
+
+  // Wipe the conversation and start over: clears history + all in-flight/loop-guard
+  // state, re-renders the log with a fresh welcome message, and re-shows the starter
+  // chips. Doesn't touch visitorId/sessionId — this is a chat reset, not a new session.
+  function resetChat() {
+    if (busy) return; // don't yank the log out from under an in-flight turn
+    state.history = [];
+    state.autoSteps = 0;
+    state.recentSigs = [];
+    state.repeatStrikes = 0;
+    exitActingMode();
+    disarmContinuation();
+    ["autoSteps", "recentSigs", "continue", "navNotice", "acting", "history"].forEach((k) =>
+      SS.removeItem("navinate." + k)
+    );
+    persist();
+    log.innerHTML = "";
+    setStatus("");
+    if (theme.welcomeMessage) addBubble("assistant", theme.welcomeMessage);
+    renderSuggestions();
+    track("chat_reset");
   }
 
   // ---- "acting" mode: get out of the way while the agent drives the page ----
@@ -949,8 +975,11 @@
       display: flex; align-items: center; justify-content: space-between;
     }
     .nn-title { font-weight: 600; font-size: 15px; }
-    .nn-min { background: transparent; border: none; color: #fff; font-size: 24px; cursor: pointer; line-height: 1; padding: 0 6px; border-radius: 6px; }
-    .nn-min:hover { background: rgba(255,255,255,.15); }
+    .nn-header-actions { display: flex; align-items: center; gap: 2px; }
+    .nn-min, .nn-reset { background: transparent; border: none; color: #fff; cursor: pointer; line-height: 1; padding: 0 6px; border-radius: 6px; }
+    .nn-min { font-size: 24px; }
+    .nn-reset { font-size: 17px; padding: 4px 7px; }
+    .nn-min:hover, .nn-reset:hover { background: rgba(255,255,255,.15); }
 
     .nn-log { flex: 1; overflow-y: auto; padding: 16px; background: #f7f7fb; display: flex; flex-direction: column; gap: 10px; }
     .nn-msg { max-width: 84%; padding: 10px 13px; border-radius: 14px; font-size: 14px; line-height: 1.45; white-space: pre-wrap; word-wrap: break-word; animation: nn-in .18s ease; }
