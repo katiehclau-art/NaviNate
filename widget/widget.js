@@ -32,7 +32,7 @@
   // navigates) — that state is preserved so it can finish the goal across pages.
   const isContinuation = SS.getItem("navinate.continue") === "1";
   if (!isContinuation) {
-    ["history", "open", "autoSteps", "recentSigs", "continue", "navNotice"].forEach((k) =>
+    ["history", "open", "autoSteps", "recentSigs", "continue", "navNotice", "acting"].forEach((k) =>
       SS.removeItem("navinate." + k)
     );
   }
@@ -46,6 +46,9 @@
     // The reason for the navigation that brought us here, stashed right before the
     // page unloaded so the new page can show "what I'm doing" under the cursor.
     navNotice: SS.getItem("navinate.navNotice") || "",
+    // True while the agent is actively driving the page. We minimize the window
+    // during this so the user can watch the cursor, then pop it back open to answer.
+    acting: SS.getItem("navinate.acting") === "1",
   };
   const MAX_AUTO_STEPS = 8; // safety cap on agent-driven steps per goal
   const RECENT_SIGS_MAX = 5; // how many past actions the loop guard remembers
@@ -94,7 +97,7 @@
     panel.innerHTML = `
       <div class="nn-header">
         <span class="nn-title">🧭 ${escapeHtml(theme.botName)}</span>
-        <button class="nn-close" title="Close">×</button>
+        <button class="nn-min" title="Minimize" aria-label="Minimize">–</button>
       </div>
       <div class="nn-log"></div>
       <div class="nn-status"></div>
@@ -108,7 +111,7 @@
     input = panel.querySelector(".nn-input");
     sendBtn = panel.querySelector(".nn-send");
     statusEl = panel.querySelector(".nn-status");
-    panel.querySelector(".nn-close").onclick = toggle;
+    panel.querySelector(".nn-min").onclick = closePanel;
 
     sendBtn.onclick = () => submit();
     input.addEventListener("keydown", (e) => {
@@ -154,14 +157,109 @@
     persist();
   }
 
+  // ---- "acting" mode: get out of the way while the agent drives the page ----
+  // While the agent is clicking/typing/navigating we minimize the window (to the
+  // launcher) so the user can watch the fake cursor, then pop it back open to
+  // deliver the answer. `acting` is persisted so it holds across the page reloads
+  // the agent triggers when it navigates.
+  function enterActingMode() {
+    if (state.acting) return;
+    state.acting = true;
+    SS.setItem("navinate.acting", "1");
+    if (state.open) closePanel(); // minimize; the cursor + caption keep the user informed
+  }
+  function exitActingMode() {
+    if (!state.acting) return;
+    state.acting = false;
+    SS.removeItem("navinate.acting");
+    openPanel(); // pop back out to show the reply
+  }
+
   // ---- chat rendering ------------------------------------------------------
   function addBubble(role, text, animate = true) {
     const b = el("div", { className: "nn-msg nn-" + role });
-    b.textContent = text;
+    // The model's replies may contain markdown; render it. User text stays plain
+    // (rendered via textContent) so nothing a visitor types can inject markup.
+    if (role === "assistant") b.innerHTML = renderMarkdown(text);
+    else b.textContent = text;
     if (!animate) b.style.animation = "none";
     log.appendChild(b);
     log.scrollTop = log.scrollHeight;
     return b;
+  }
+
+  // Tiny, dependency-free markdown → HTML for assistant messages. Everything from
+  // the model is HTML-escaped FIRST, so this can't be used to inject markup; we
+  // then layer on a safe subset (headings, bold/italic, code, lists, quotes, links).
+  function renderMarkdown(src) {
+    const blocks = []; // fenced code blocks, pulled out so they're not marked up
+    const spans = []; // inline `code` spans
+
+    let text = String(src == null ? "" : src);
+    text = text.replace(/```([\s\S]*?)```/g, (_, body) => {
+      const code = body.replace(/^[\w-]*\n/, "").replace(/\n$/, "");
+      blocks.push(code);
+      return `\nB${blocks.length - 1}B\n`; // own line -> handled as a block, not a <p>
+    });
+    text = text.replace(/`([^`\n]+)`/g, (_, body) => {
+      spans.push(body);
+      return `C${spans.length - 1}C`;
+    });
+    text = escapeHtml(text); // placeholders survive (no HTML-special chars)
+
+    const inline = (s) =>
+      s
+        .replace(
+          /\[([^\]]+)\]\((https?:\/\/[^\s)]+|\/[^\s)]*|#[^\s)]+)\)/g,
+          '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>'
+        )
+        .replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+        .replace(/__([^_]+)__/g, "<strong>$1</strong>")
+        .replace(/(^|[^*])\*([^*\s][^*]*?)\*/g, "$1<em>$2</em>")
+        .replace(/(^|[^_\w])_([^_\s][^_]*?)_/g, "$1<em>$2</em>");
+
+    const lines = text.split(/\r?\n/);
+    let html = "";
+    let list = null; // 'ul' | 'ol'
+    let para = [];
+    const flushPara = () => {
+      if (para.length) { html += `<p>${para.map(inline).join("<br>")}</p>`; para = []; }
+    };
+    const closeList = () => { if (list) { html += `</${list}>`; list = null; } };
+
+    for (const raw of lines) {
+      const line = raw.replace(/\s+$/, "");
+      let m;
+      if (!line.trim()) { flushPara(); closeList(); continue; }
+      if ((m = line.trim().match(/^B(\d+)B$/))) { // a fenced code block on its own line
+        flushPara(); closeList();
+        html += `<pre><code>${escapeHtml(blocks[+m[1]])}</code></pre>`;
+        continue;
+      }
+      if ((m = line.match(/^(#{1,6})\s+(.*)$/))) {
+        flushPara(); closeList();
+        html += `<h${m[1].length}>${inline(m[2])}</h${m[1].length}>`;
+      } else if ((m = line.match(/^\s*[-*+]\s+(.*)$/))) {
+        flushPara();
+        if (list !== "ul") { closeList(); html += "<ul>"; list = "ul"; }
+        html += `<li>${inline(m[1])}</li>`;
+      } else if ((m = line.match(/^\s*\d+\.\s+(.*)$/))) {
+        flushPara();
+        if (list !== "ol") { closeList(); html += "<ol>"; list = "ol"; }
+        html += `<li>${inline(m[1])}</li>`;
+      } else if ((m = line.match(/^>\s?(.*)$/))) {
+        flushPara(); closeList();
+        html += `<blockquote>${inline(m[1])}</blockquote>`;
+      } else {
+        para.push(line);
+      }
+    }
+    flushPara(); closeList();
+
+    // Restore any leftover code placeholders (inline spans + stray blocks).
+    html = html.replace(/B(\d+)B/g, (_, i) => `<pre><code>${escapeHtml(blocks[+i])}</code></pre>`);
+    html = html.replace(/C(\d+)C/g, (_, i) => `<code>${escapeHtml(spans[+i])}</code>`);
+    return html || "";
   }
   function setStatus(text) {
     statusEl.textContent = text || "";
@@ -370,6 +468,7 @@
         }
         state.repeatStrikes = 0; // made real progress — reset the strike counter
 
+        enterActingMode(); // minimize the window so the user can watch the page
         showCursorCaption(action.reason);
         const r = await performAction(action);
         hideCursorCaption();
@@ -399,10 +498,13 @@
         msg = ""; // "" = continue toward the same goal against the updated page
         await sleep(450);
       }
+      // Loop finished with a text answer (not a navigation) — pop back open to show it.
+      exitActingMode();
       setStatus("");
     } catch (err) {
       console.error("[NaviNate]", err);
       hideCursorCaption(0);
+      exitActingMode();
       addBubble("assistant", "Hmm, I couldn't reach my brain just now. Mind trying again?");
       setStatus("");
     } finally {
@@ -644,7 +746,10 @@
     // If the agent navigated us here mid-task, keep going automatically.
     if (state.pendingContinue) {
       disarmContinuation();
-      openPanel();
+      // If we're still driving the page, stay minimized and let the cursor notice
+      // do the talking; otherwise pop open. Either way, resume the goal.
+      if (state.acting) closePanel();
+      else openPanel();
       // Show a notice of what the bot just did to land here (persisted pre-reload).
       const notice = state.navNotice || "Continuing…";
       setStatus(notice);
@@ -706,13 +811,35 @@
       display: flex; align-items: center; justify-content: space-between;
     }
     .nn-title { font-weight: 600; font-size: 15px; }
-    .nn-close { background: transparent; border: none; color: #fff; font-size: 22px; cursor: pointer; line-height: 1; }
+    .nn-min { background: transparent; border: none; color: #fff; font-size: 24px; cursor: pointer; line-height: 1; padding: 0 6px; border-radius: 6px; }
+    .nn-min:hover { background: rgba(255,255,255,.15); }
 
     .nn-log { flex: 1; overflow-y: auto; padding: 16px; background: #f7f7fb; display: flex; flex-direction: column; gap: 10px; }
     .nn-msg { max-width: 84%; padding: 10px 13px; border-radius: 14px; font-size: 14px; line-height: 1.45; white-space: pre-wrap; word-wrap: break-word; animation: nn-in .18s ease; }
     @keyframes nn-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
     .nn-user { align-self: flex-end; background: var(--nn-accent); color: #fff; border-bottom-right-radius: 4px; }
-    .nn-assistant { align-self: flex-start; background: #fff; color: #1a1a1a; border: 1px solid #ececf2; border-bottom-left-radius: 4px; }
+    .nn-assistant { align-self: flex-start; background: #fff; color: #1a1a1a; border: 1px solid #ececf2; border-bottom-left-radius: 4px; white-space: normal; }
+
+    /* rendered markdown inside assistant bubbles */
+    .nn-assistant > :first-child { margin-top: 0; }
+    .nn-assistant > :last-child { margin-bottom: 0; }
+    .nn-assistant p { margin: 0 0 8px; }
+    .nn-assistant h1, .nn-assistant h2, .nn-assistant h3,
+    .nn-assistant h4, .nn-assistant h5, .nn-assistant h6 { margin: 12px 0 6px; line-height: 1.3; }
+    .nn-assistant h1 { font-size: 17px; } .nn-assistant h2 { font-size: 16px; }
+    .nn-assistant h3 { font-size: 15px; } .nn-assistant h4,
+    .nn-assistant h5, .nn-assistant h6 { font-size: 14px; }
+    .nn-assistant ul, .nn-assistant ol { margin: 4px 0 8px; padding-left: 20px; }
+    .nn-assistant li { margin: 2px 0; }
+    .nn-assistant a { color: var(--nn-accent); text-decoration: underline; word-break: break-word; }
+    .nn-assistant strong { font-weight: 700; }
+    .nn-assistant em { font-style: italic; }
+    .nn-assistant code { background: #f0f1f6; border-radius: 5px; padding: 1px 5px; font-size: 12.5px;
+      font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
+    .nn-assistant pre { background: #0f1526; color: #e6e9f2; border-radius: 10px; padding: 11px 13px;
+      overflow-x: auto; margin: 8px 0; }
+    .nn-assistant pre code { background: none; color: inherit; padding: 0; font-size: 12.5px; }
+    .nn-assistant blockquote { margin: 8px 0; padding: 4px 12px; border-left: 3px solid #d7dbe8; color: #55607a; }
 
     .nn-status { padding: 6px 16px; font-size: 12.5px; color: #6b6b7b; background: #f7f7fb; display: none; font-style: italic; }
 
