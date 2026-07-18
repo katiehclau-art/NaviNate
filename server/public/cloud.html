@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Cloud Compute — NimbusCore</title>
+<meta name="description" content="Browse NimbusCore cloud servers: enterprise, hybrid, and edge compute across US-East, EU-Central, and APAC. Filter by region and workload and add to cart." />
+<link rel="stylesheet" href="/assets/site.css" />
+</head>
+<body>
+<div id="site-header"></div>
+
+<nav class="breadcrumb"><a href="/">Home</a> › <a href="/services.html">Services</a> › Cloud Compute</nav>
+
+<section class="hero">
+  <h1>Cloud Compute</h1>
+  <p>Enterprise, hybrid, and edge servers across three regions. Filter on the left,
+     compare prices, and add the right server to your cart.</p>
+</section>
+
+<main class="with-aside">
+  <aside>
+    <div class="filter-group">
+      <h3>Region</h3>
+      <button class="filter-btn active" data-filter="region" data-value="all">All regions</button>
+      <button class="filter-btn" data-filter="region" data-value="us">US-East</button>
+      <button class="filter-btn" data-filter="region" data-value="eu">EU-Central</button>
+      <button class="filter-btn" data-filter="region" data-value="apac">APAC</button>
+    </div>
+    <div class="filter-group">
+      <h3>Workload</h3>
+      <button class="filter-btn active" data-filter="type" data-value="all">All types</button>
+      <button class="filter-btn" data-filter="type" data-value="enterprise">Enterprise</button>
+      <button class="filter-btn" data-filter="type" data-value="hybrid">Hybrid</button>
+      <button class="filter-btn" data-filter="type" data-value="edge">Edge</button>
+    </div>
+    <p style="font-size:12px;color:#8a93aa">Need something custom? Use the
+       <a href="/configure.html">Configuration Wizard</a>.</p>
+  </aside>
+
+  <section>
+    <div class="grid" id="catalog"><!-- products injected by JS --></div>
+  </section>
+</main>
+
+<footer>NimbusCore — demo site · not a real company</footer>
+
+<script>window.PAGE = "cloud";</script>
+<script src="/assets/site.js"></script>
+<script>
+  // ---- product data ----
+  const products = [
+    { name: "Nimbus S1", type: "edge",       region: "us",   tags: ["Edge","2 vCPU"],              price: 39 },
+    { name: "Nimbus E4", type: "enterprise", region: "us",   tags: ["Enterprise","16 vCPU"],       price: 299 },
+    { name: "Nimbus E4", type: "enterprise", region: "eu",   tags: ["Enterprise","EU","16 vCPU"],  price: 319 },
+    { name: "Nimbus H8", type: "hybrid",     region: "eu",   tags: ["Hybrid","EU","32 vCPU"],      price: 549 },
+    { name: "Nimbus H8", type: "hybrid",     region: "apac", tags: ["Hybrid","APAC","32 vCPU"],    price: 579 },
+    { name: "Nimbus X1", type: "enterprise", region: "apac", tags: ["Enterprise","APAC","64 vCPU"],price: 999 },
+  ];
+
+  // Filters can be pre-applied via ?type= and ?region= so the agent (or a deep
+  // link from the nav) can jump straight to the right slice of the catalog.
+  const params = new URLSearchParams(location.search);
+  const state = {
+    region: params.get("region") || "all",
+    type: params.get("type") || "all",
+  };
+
+  const regionLabel = { all: "All regions", us: "US-East", eu: "EU-Central", apac: "APAC" };
+  const typeLabel = { all: "servers", enterprise: "Enterprise servers", hybrid: "Hybrid servers", edge: "Edge nodes" };
+
+  function syncTitle() {
+    // Distinct titles help the scraper describe the deep-linked variants.
+    const bits = [];
+    if (state.type !== "all") bits.push(typeLabel[state.type]);
+    if (state.region !== "all") bits.push("in " + regionLabel[state.region]);
+    document.title = (bits.length ? "Cloud Compute — " + bits.join(" ") : "Cloud Compute") + " — NimbusCore";
+  }
+
+  function syncFilterButtons() {
+    document.querySelectorAll(".filter-btn").forEach((b) => {
+      const on = state[b.dataset.filter] === b.dataset.value;
+      b.classList.toggle("active", on);
+    });
+  }
+
+  function render() {
+    const c = document.getElementById("catalog");
+    c.innerHTML = "";
+    products
+      .filter((p) => state.region === "all" || p.region === state.region)
+      .filter((p) => state.type === "all" || p.type === state.type)
+      .forEach((p) => {
+        const card = document.createElement("div");
+        card.className = "card";
+        card.innerHTML =
+          "<h4>" + p.name + "</h4>" +
+          p.tags.map((t) => '<span class="tag">' + t + "</span>").join("") +
+          '<div class="price">$' + p.price + "/mo</div>" +
+          '<button class="btn secondary" style="margin-bottom:6px">View details</button>' +
+          '<button class="btn add">Add to Cart</button>';
+        card.querySelector(".add").onclick = () =>
+          window.Nimbus.addToCart({ name: p.name, price: p.price });
+        c.appendChild(card);
+      });
+    if (!c.children.length)
+      c.innerHTML = '<p style="color:#8a93aa">No servers match those filters.</p>';
+    syncTitle();
+    syncFilterButtons();
+  }
+
+  document.querySelectorAll(".filter-btn").forEach((btn) => {
+    btn.onclick = () => {
+      state[btn.dataset.filter] = btn.dataset.value;
+      render();
+    };
+  });
+
+  render();
+</script>
+
+<script src="/widget.js?clientId=demo"></script>
+</body>
+</html>

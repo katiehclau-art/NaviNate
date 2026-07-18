@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Server Configuration Wizard — NimbusCore</title>
+<meta name="description" content="Build a custom NimbusCore server step by step: hardware, networking, security, and billing." />
+<link rel="stylesheet" href="/assets/site.css" />
+</head>
+<body>
+<div id="site-header"></div>
+<nav class="breadcrumb"><a href="/">Home</a> › Configure</nav>
+
+<section class="hero">
+  <h1>Server Configuration Wizard</h1>
+  <p>Four steps to a custom server. Work through the tabs, then place your order.</p>
+</section>
+
+<main>
+  <div class="config">
+    <div class="tabs">
+      <button class="tab active" data-tab="hardware">1. Hardware</button>
+      <button class="tab" data-tab="networking">2. Networking</button>
+      <button class="tab" data-tab="security">3. Security</button>
+      <button class="tab" data-tab="billing">4. Billing</button>
+    </div>
+
+    <div class="tab-panel active" data-panel="hardware">
+      <div class="field"><label>vCPU cores</label>
+        <select><option>4</option><option>8</option><option>16</option><option>64</option></select></div>
+      <div class="field"><label>RAM</label>
+        <select><option>16 GB</option><option>64 GB</option><option>256 GB</option></select></div>
+    </div>
+
+    <div class="tab-panel" data-panel="networking">
+      <div class="field"><label>Region</label>
+        <select><option>US-East</option><option>EU-Central</option><option>APAC</option></select></div>
+      <div class="field"><label>Bandwidth</label>
+        <select><option>1 Gbps</option><option>10 Gbps</option><option>40 Gbps</option></select></div>
+    </div>
+
+    <div class="tab-panel" data-panel="security">
+      <div class="field"><label>Compliance</label>
+        <select><option>SOC 2</option><option>HIPAA</option><option>FedRAMP</option></select></div>
+      <div class="field"><label>Encryption</label>
+        <select><option>AES-256</option><option>Customer-managed keys</option></select></div>
+    </div>
+
+    <div class="tab-panel" data-panel="billing">
+      <div class="field"><label>Billing email</label>
+        <input type="email" placeholder="you@company.com" /></div>
+      <div class="field"><label>Term</label>
+        <select><option>Monthly</option><option>Annual (save 15%)</option></select></div>
+      <div style="margin-top:16px"><button class="btn" id="place-order">Review &amp; Place Order</button></div>
+    </div>
+  </div>
+</main>
+
+<footer>NimbusCore — demo site · not a real company</footer>
+<script>window.PAGE = "configure";</script>
+<script src="/assets/site.js"></script>
+<script>
+  document.querySelectorAll(".tab").forEach((tab) => {
+    tab.onclick = () => {
+      document.querySelectorAll(".tab").forEach((t) => t.classList.remove("active"));
+      document.querySelectorAll(".tab-panel").forEach((p) => p.classList.remove("active"));
+      tab.classList.add("active");
+      document.querySelector('.tab-panel[data-panel="' + tab.dataset.tab + '"]').classList.add("active");
+    };
+  });
+  document.getElementById("place-order").onclick = () => {
+    window.Nimbus.addToCart({ name: "Custom configured server", price: null });
+    window.Nimbus.toast("Configuration added to cart");
+  };
+</script>
+<script src="/widget.js?clientId=demo"></script>
+</body>
+</html>

@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Cart &amp; Checkout — NimbusCore</title>
+<meta name="description" content="Review the items in your NimbusCore cart and place your order." />
+<link rel="stylesheet" href="/assets/site.css" />
+<style>
+  .line { display: flex; align-items: center; justify-content: space-between; padding: 12px 0; border-bottom: 1px solid #f0f2f8; }
+  .line .remove { background: none; border: none; color: #c2415a; cursor: pointer; font-size: 13px; }
+  .total { display: flex; justify-content: space-between; font-weight: 800; font-size: 18px; margin-top: 14px; }
+  .empty { color: #8a93aa; padding: 20px 0; }
+</style>
+</head>
+<body>
+<div id="site-header"></div>
+<nav class="breadcrumb"><a href="/">Home</a> › Cart</nav>
+
+<section class="hero">
+  <h1>Your Cart</h1>
+  <p>Review your selections and place the order.</p>
+</section>
+
+<main>
+  <div class="panel-card" style="max-width:620px">
+    <div id="lines"></div>
+    <div class="total" id="total-row" style="display:none">
+      <span>Total (monthly)</span><span id="total">$0</span>
+    </div>
+    <div style="margin-top:18px;display:flex;gap:10px">
+      <button class="btn" id="checkout">Place Order</button>
+      <a class="btn secondary" href="/cloud.html">Keep shopping</a>
+    </div>
+  </div>
+</main>
+
+<footer>NimbusCore — demo site · not a real company</footer>
+<script>window.PAGE = "cart";</script>
+<script src="/assets/site.js"></script>
+<script>
+  function renderCart() {
+    const items = window.Nimbus.getCart();
+    const wrap = document.getElementById("lines");
+    wrap.innerHTML = "";
+    if (!items.length) {
+      wrap.innerHTML = '<p class="empty">Your cart is empty. <a href="/cloud.html">Browse servers</a>.</p>';
+      document.getElementById("total-row").style.display = "none";
+      return;
+    }
+    let total = 0;
+    items.forEach((it, i) => {
+      const priceText = it.price == null ? "—" : "$" + it.price + "/mo";
+      if (typeof it.price === "number") total += it.price;
+      const row = document.createElement("div");
+      row.className = "line";
+      row.innerHTML =
+        "<span>" + it.name + "</span>" +
+        '<span>' + priceText + ' <button class="remove" data-i="' + i + '">Remove</button></span>';
+      wrap.appendChild(row);
+    });
+    document.getElementById("total").textContent = "$" + total + "/mo";
+    document.getElementById("total-row").style.display = "flex";
+    wrap.querySelectorAll(".remove").forEach((b) => {
+      b.onclick = () => {
+        const items = window.Nimbus.getCart();
+        items.splice(Number(b.dataset.i), 1);
+        window.Nimbus.setCart(items);
+        renderCart();
+      };
+    });
+  }
+
+  document.getElementById("checkout").onclick = () => {
+    if (!window.Nimbus.getCart().length) return window.Nimbus.toast("Your cart is empty");
+    window.Nimbus.setCart([]);
+    renderCart();
+    window.Nimbus.toast("Order placed — thank you!");
+  };
+
+  renderCart();
+</script>
+<script src="/widget.js?clientId=demo"></script>
+</body>
+</html>

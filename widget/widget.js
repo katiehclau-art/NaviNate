@@ -32,7 +32,7 @@
   // navigates) — that state is preserved so it can finish the goal across pages.
   const isContinuation = SS.getItem("navinate.continue") === "1";
   if (!isContinuation) {
-    ["history", "open", "autoSteps", "recentSigs", "continue"].forEach((k) =>
+    ["history", "open", "autoSteps", "recentSigs", "continue", "navNotice"].forEach((k) =>
       SS.removeItem("navinate." + k)
     );
   }
@@ -43,6 +43,9 @@
     recentSigs: JSON.parse(SS.getItem("navinate.recentSigs") || "[]"), // recent action signatures (loop guard)
     repeatStrikes: 0, // in-memory: consecutive repeated-action nudges before we give up
     pendingContinue: isContinuation,
+    // The reason for the navigation that brought us here, stashed right before the
+    // page unloaded so the new page can show "what I'm doing" under the cursor.
+    navNotice: SS.getItem("navinate.navNotice") || "",
   };
   const MAX_AUTO_STEPS = 8; // safety cap on agent-driven steps per goal
   const RECENT_SIGS_MAX = 5; // how many past actions the loop guard remembers
@@ -433,12 +436,12 @@
       if (node) {
         const label = elementText(node);
         await moveCursorToNode(node);
-        armContinuation();
+        armContinuation(reason || `Navigating to ${label || "another page"}…`);
         node.click();
         return { navigated: true, label, executed: true };
       }
       if (url) {
-        armContinuation();
+        armContinuation(reason || `Navigating to ${url}…`);
         window.location.href = new URL(url, window.location.href).href; // handles relative paths
         return { navigated: true, label: url, executed: true };
       }
@@ -454,7 +457,7 @@
     if (type === "click") {
       await flashClick(node);
       const before = window.location.href;
-      armContinuation(); // a click may navigate (e.g. an <a>)
+      armContinuation(reason); // a click may navigate (e.g. an <a>)
       realClick(node);
       await sleep(150);
       const navigated = window.location.href !== before;
@@ -509,13 +512,17 @@
     return skip;
   }
 
-  // After a navigation, resume the agent loop on the next page load.
-  function armContinuation() {
+  // After a navigation, resume the agent loop on the next page load. We also stash
+  // the reason so the destination page can show a notice of what the bot is doing
+  // (the cursor caption is wiped by the page reload).
+  function armContinuation(reason) {
     SS.setItem("navinate.continue", "1");
+    if (reason) SS.setItem("navinate.navNotice", reason);
     persist();
   }
   function disarmContinuation() {
     SS.removeItem("navinate.continue");
+    SS.removeItem("navinate.navNotice");
   }
 
   // ---- fake cursor + real interaction --------------------------------------
@@ -531,6 +538,20 @@
     captionTimer = setTimeout(() => {
       cursorCaption.classList.remove("nn-caption-visible");
     }, delay);
+  }
+
+  // Just landed on a page the agent navigated to: park the cursor at a visible
+  // spot and show what it's doing beneath it — the same "text under the cursor"
+  // affordance, carried across the page reload so the jump never feels silent.
+  function showNavNotice(text) {
+    const x = Math.round(window.innerWidth / 2);
+    const y = Math.round(Math.max(96, window.innerHeight * 0.26));
+    cursor.classList.add("nn-cursor-active");
+    cursor.classList.toggle("nn-cursor-left", x > window.innerWidth - 250);
+    cursor.classList.toggle("nn-cursor-above", y > window.innerHeight - 100);
+    cursor.style.transform = `translate(${x}px, ${y}px)`;
+    showCursorCaption(text);
+    hideCursorCaption(2600); // fades on its own; the next real action cancels it
   }
 
   function moveCursorToNode(node) {
@@ -624,7 +645,10 @@
     if (state.pendingContinue) {
       disarmContinuation();
       openPanel();
-      setStatus("Continuing…");
+      // Show a notice of what the bot just did to land here (persisted pre-reload).
+      const notice = state.navNotice || "Continuing…";
+      setStatus(notice);
+      if (state.navNotice) showNavNotice(state.navNotice);
       await sleep(700); // let the new page settle
       if (state.autoSteps < MAX_AUTO_STEPS) {
         state.autoSteps++;

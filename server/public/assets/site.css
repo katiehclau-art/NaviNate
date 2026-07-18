@@ -1,0 +1,85 @@
+/* NimbusCore demo site — shared styles
+ * Used by every page. The maze-like multi-page navigation is deliberate: it
+ * gives the NaviNate agent a real site to explore and jump around. */
+* { box-sizing: border-box; }
+body { margin: 0; font-family: system-ui, "Segoe UI", Roboto, sans-serif; color: #1f2430; background: #f4f6fb; }
+a { color: #2f6bff; }
+
+/* ---- header + nav ---- */
+header { background: #0b1f3a; color: #fff; position: sticky; top: 0; z-index: 50; }
+.bar { display: flex; align-items: center; gap: 28px; padding: 14px 28px; max-width: 1200px; margin: 0 auto; }
+.brand { font-weight: 800; letter-spacing: .5px; font-size: 18px; color: #fff; text-decoration: none; }
+nav ul { list-style: none; display: flex; gap: 22px; margin: 0; padding: 0; }
+nav > ul > li { position: relative; }
+nav a { color: #cdd6ea; text-decoration: none; font-size: 14px; cursor: pointer; }
+nav a:hover { color: #fff; }
+nav a.current { color: #fff; font-weight: 600; }
+nav li ul { display: none; position: absolute; top: 24px; left: 0; background: #10294a; padding: 8px 0; border-radius: 8px; min-width: 190px; box-shadow: 0 12px 30px rgba(0,0,0,.3); }
+nav li:hover > ul { display: block; }
+nav li ul li { padding: 7px 16px; white-space: nowrap; }
+nav li ul li ul { top: -8px; left: 100%; }
+.cart { margin-left: auto; }
+.cart a { background: #16305a; padding: 7px 13px; border-radius: 20px; font-size: 13px; color: #fff; text-decoration: none; display: inline-block; }
+.cart a:hover { background: #1d3d6f; }
+
+/* ---- hero ---- */
+.hero { max-width: 1200px; margin: 0 auto; padding: 40px 28px 10px; }
+.hero h1 { font-size: 30px; margin: 0 0 6px; }
+.hero p { color: #55607a; margin: 0; max-width: 720px; }
+
+/* ---- layout ---- */
+main { max-width: 1200px; margin: 0 auto; padding: 24px 28px 80px; }
+main.with-aside { display: grid; grid-template-columns: 240px 1fr; gap: 28px; }
+section.stack > * + * { margin-top: 16px; }
+
+aside { background: #fff; border: 1px solid #e6e9f2; border-radius: 12px; padding: 18px; height: fit-content; }
+aside h3 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: .6px; color: #8a93aa; }
+.filter-group { margin-bottom: 18px; }
+.filter-btn { display: block; width: 100%; text-align: left; background: #f1f4fb; border: 1px solid #e2e7f2; color: #2a3346; padding: 8px 11px; border-radius: 8px; margin: 5px 0; cursor: pointer; font-size: 13px; }
+.filter-btn.active { background: #2f6bff; border-color: #2f6bff; color: #fff; }
+
+/* ---- cards / grid ---- */
+.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 16px; }
+.card { background: #fff; border: 1px solid #e6e9f2; border-radius: 12px; padding: 16px; display: flex; flex-direction: column; }
+.card h4 { margin: 0 0 4px; font-size: 15px; }
+.card p { color: #55607a; font-size: 13px; margin: 6px 0; }
+.tag { font-size: 11px; color: #6b7590; background: #eef1f8; padding: 2px 7px; border-radius: 20px; display: inline-block; margin: 2px 3px 8px 0; }
+.price { font-weight: 800; font-size: 18px; margin: 8px 0; }
+.btn { background: #2f6bff; color: #fff; border: none; padding: 9px 12px; border-radius: 8px; cursor: pointer; font-size: 13px; font-weight: 600; margin-top: auto; text-decoration: none; text-align: center; display: inline-block; }
+.btn:hover { background: #245ae0; }
+.btn.secondary { background: #eaf0ff; color: #2f6bff; }
+.btn.secondary:hover { background: #dbe7ff; }
+
+/* ---- generic content blocks ---- */
+.panel-card { background: #fff; border: 1px solid #e6e9f2; border-radius: 12px; padding: 24px; }
+.panel-card h2 { margin-top: 0; }
+.lead { color: #55607a; font-size: 15px; line-height: 1.6; }
+.two-col { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 16px; }
+
+/* ---- pricing table ---- */
+.pricing { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; }
+.plan { background: #fff; border: 1px solid #e6e9f2; border-radius: 12px; padding: 22px; display: flex; flex-direction: column; }
+.plan.featured { border-color: #2f6bff; box-shadow: 0 12px 30px rgba(47,107,255,.12); }
+.plan h3 { margin: 0 0 4px; }
+.plan .amount { font-size: 30px; font-weight: 800; margin: 10px 0; }
+.plan ul { list-style: none; padding: 0; margin: 0 0 18px; }
+.plan li { padding: 6px 0; font-size: 14px; color: #45506b; border-bottom: 1px solid #f0f2f8; }
+
+/* ---- config wizard ---- */
+.config { background: #fff; border: 1px solid #e6e9f2; border-radius: 12px; padding: 20px; }
+.tabs { display: flex; gap: 6px; border-bottom: 2px solid #eef1f8; margin-bottom: 16px; flex-wrap: wrap; }
+.tab { padding: 9px 14px; cursor: pointer; border: none; background: none; font-size: 14px; color: #6b7590; border-bottom: 2px solid transparent; margin-bottom: -2px; }
+.tab.active { color: #2f6bff; border-bottom-color: #2f6bff; font-weight: 600; }
+.tab-panel { display: none; } .tab-panel.active { display: block; }
+label { display: block; margin: 10px 0 4px; font-size: 13px; color: #55607a; }
+select, input, textarea { padding: 8px 10px; border: 1px solid #dbe0ee; border-radius: 8px; min-width: 220px; font-family: inherit; font-size: 14px; }
+textarea { min-height: 90px; width: 100%; }
+.field { margin-bottom: 14px; }
+
+/* ---- misc ---- */
+.toast { position: fixed; bottom: 20px; left: 20px; background: #10294a; color: #fff; padding: 12px 16px; border-radius: 10px; opacity: 0; transform: translateY(10px); transition: .25s; z-index: 40; }
+.toast.show { opacity: 1; transform: none; }
+footer { text-align: center; padding: 24px; color: #8a93aa; font-size: 12px; }
+.breadcrumb { max-width: 1200px; margin: 0 auto; padding: 14px 28px 0; font-size: 13px; color: #8a93aa; }
+.breadcrumb a { color: #6b7590; text-decoration: none; }
+.breadcrumb a:hover { text-decoration: underline; }
