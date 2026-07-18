@@ -1007,8 +1007,23 @@
 
   // ---- fake cursor + real interaction --------------------------------------
   let captionTimer;
+  let cursorIdleTimer;
+
+  function wakeCursor() {
+    clearTimeout(cursorIdleTimer);
+    cursor.classList.add("nn-cursor-active");
+  }
+
+  function hideIdleCursor(delay = 1300) {
+    clearTimeout(cursorIdleTimer);
+    cursorIdleTimer = setTimeout(() => {
+      cursor.classList.remove("nn-cursor-active", "nn-cursor-click");
+    }, delay);
+  }
+
   function showCursorCaption(text) {
     clearTimeout(captionTimer);
+    clearTimeout(cursorIdleTimer);
     cursorCaption.textContent = text || "Working on this…";
     cursorCaption.classList.add("nn-caption-visible");
   }
@@ -1018,6 +1033,7 @@
     captionTimer = setTimeout(() => {
       cursorCaption.classList.remove("nn-caption-visible");
     }, delay);
+    hideIdleCursor(delay + 450);
   }
 
   // Just landed on a page the agent navigated to: park the cursor at a visible
@@ -1026,7 +1042,7 @@
   function showNavNotice(text) {
     const x = Math.round(window.innerWidth / 2);
     const y = Math.round(Math.max(96, window.innerHeight * 0.26));
-    cursor.classList.add("nn-cursor-active");
+    wakeCursor();
     cursor.classList.toggle("nn-cursor-left", x > window.innerWidth - 250);
     cursor.classList.toggle("nn-cursor-above", y > window.innerHeight - 100);
     cursor.style.transform = `translate(${x}px, ${y}px)`;
@@ -1040,7 +1056,7 @@
       const rect = node.getBoundingClientRect();
       const x = rect.left + rect.width / 2;
       const y = rect.top + rect.height / 2;
-      cursor.classList.add("nn-cursor-active");
+      wakeCursor();
       cursor.classList.toggle("nn-cursor-left", x > window.innerWidth - 250);
       cursor.classList.toggle("nn-cursor-above", y > window.innerHeight - 100);
       cursor.style.transform = `translate(${x}px, ${y}px)`;
