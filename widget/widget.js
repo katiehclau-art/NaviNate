@@ -211,6 +211,7 @@
 
   // ---- build the UI --------------------------------------------------------
   let root, panel, log, input, sendBtn, launcher, cursor, cursorCaption, statusEl, suggestionsEl, undoBtn, micBtn;
+  let originProbe;
   let fogTop, fogBottom;
   let voiceStage, captionEl, orbEl, vStateEl, vMicBtn, vDoneBtn;
   let voice = null; // the ElevenLabs voice controller, lazy-loaded on first use
@@ -339,6 +340,11 @@
     // Hand back to the keyboard without hanging up — the call keeps running and
     // the mic button in the input bar brings the stage back.
     voiceStage.querySelector(".nn-vkeyboard").onclick = () => setVoiceUI(false);
+
+    // Measures where our fixed-position containing block actually is — see
+    // overlayOffset(). Must carry no transform/transition of its own.
+    originProbe = el("div", { className: "nn-origin" });
+    root.appendChild(originProbe);
 
     // Fake cursor
     cursor = el("div", { className: "nn-cursor" });
@@ -1563,6 +1569,18 @@
     return window.location.href.replace(/#.*$/, "") !== fromUrl.replace(/#.*$/, "");
   }
 
+  // A URL change with NO pagehide/beforeunload is a client-side route change
+  // (history.pushState — what most buttons that "redirect" actually do on a modern
+  // app). The document survives, so no load event fires and boot() never runs
+  // again. Reporting that as a navigation is what hung the agent: runTurn returns
+  // early to wait for the next page, that page never comes, and the goal is
+  // orphaned with `acting` still true — launcher pulsing forever on a task nothing
+  // will ever finish. A real navigation always announces itself by unloading,
+  // which is why plain <a href> links were unaffected.
+  function isClientSideRoute(fromUrl, unloadFired) {
+    return !unloadFired && leftThePage(fromUrl, false);
+  }
+
   async function performAction(action) {
     const { action: type, target_id, value, url, reason } = action;
     if (reason) setStatus(reason);
@@ -1573,6 +1591,11 @@
         const label = elementText(node);
         await moveCursorToNode(node);
         await letVoiceFinishSpeaking();
+        // Same press animation a button gets: the hand switches to its click pose
+        // and the target pulses. Without this a link navigation read as an abrupt
+        // redirect — the cursor slid over and the page simply vanished, with no
+        // visible moment of "it clicked THIS".
+        await flashClick(node);
         // Watch for the page actually starting to unload. A "navigate" whose
         // target turns out NOT to navigate — a #anchor, a target=_blank link, or
         // an element that merely toggles something — must not report success:
@@ -1586,12 +1609,22 @@
         window.addEventListener("beforeunload", onLeave);
         armContinuation(reason || `Navigating to ${label || "another page"}…`);
         recordUndoNavigationStep();
-        node.click();
+        // realClick (not a bare node.click()) so a link gets the same
+        // mousedown/mouseup/click sequence a button does — sites that decorate
+        // links with press handlers then behave identically either way.
+        realClick(node);
         await sleep(400); // give a redirect time to begin unloading
         window.removeEventListener("pagehide", onLeave);
         window.removeEventListener("beforeunload", onLeave);
-        if (leftThePage(before, leaving)) {
+        if (leaving) {
           return { navigated: true, label, executed: true };
+        }
+        if (isClientSideRoute(before, leaving)) {
+          // In-app route change — the document stays put, so nothing will reload
+          // to resume us. Carry on in place rather than waiting forever.
+          disarmContinuation();
+          await sleep(400); // let the new view render before the next DOM scan
+          return { navigated: false, label, executed: true };
         }
         // Didn't move. Follow the element's href directly if it has one;
         // otherwise the navigate was a misfire — disarm and let the loop take the
@@ -1655,21 +1688,29 @@
       await sleep(400); // give a redirect time to begin unloading
       window.removeEventListener("pagehide", onLeave);
       window.removeEventListener("beforeunload", onLeave);
-      const navigated = leftThePage(before, leaving);
-      if (!navigated) {
-        // The element carries an href but clicking it didn't navigate — a link
-        // whose default was preventDefault'd, or a non-anchor with an href
-        // attribute the browser doesn't follow on its own. Honour it as a link
-        // and go there. It came from the live DOM (not the model), so no
-        // hallucination/404 guard is needed — just follow it.
-        if (href) {
-          await letVoiceFinishSpeaking();
-          window.location.assign(new URL(href, window.location.href).href); // continuation already armed
-          return { navigated: true, label, executed: true };
-        }
-        disarmContinuation();
+      if (leaving) {
+        // The document really is going away — boot() resumes the goal next page.
+        return { navigated: true, label, executed: true };
       }
-      return { navigated, label, executed: true };
+      if (isClientSideRoute(before, leaving)) {
+        // In-app route change: same document, new view, and no load event will
+        // ever fire to resume us. Keep driving here instead of stranding the goal.
+        disarmContinuation();
+        await sleep(400); // let the new view render before the next DOM scan
+        return { navigated: false, label, executed: true };
+      }
+      // Didn't move at all. The element carries an href but clicking it didn't
+      // navigate — a link whose default was preventDefault'd, or a non-anchor with
+      // an href attribute the browser doesn't follow on its own. Honour it as a
+      // link and go there. It came from the live DOM (not the model), so no
+      // hallucination/404 guard is needed — just follow it.
+      if (href) {
+        await letVoiceFinishSpeaking();
+        window.location.assign(new URL(href, window.location.href).href); // continuation already armed
+        return { navigated: true, label, executed: true };
+      }
+      disarmContinuation();
+      return { navigated: false, label, executed: true };
     }
 
     if (type === "type") {
@@ -1791,10 +1832,11 @@
   function showNavNotice(text) {
     const x = Math.round(window.innerWidth / 2);
     const y = Math.round(Math.max(96, window.innerHeight * 0.26));
+    const off = overlayOffset();
     wakeCursor();
     cursor.classList.toggle("nn-cursor-left", x > window.innerWidth - 250);
     cursor.classList.toggle("nn-cursor-above", y > window.innerHeight - 100);
-    cursor.style.transform = `translate(${x}px, ${y}px)`;
+    cursor.style.transform = `translate(${x + off.x}px, ${y + off.y}px)`;
     showCursorCaption(text);
     hideCursorCaption(2600); // fades on its own; the next real action cancels it
   }
@@ -1806,38 +1848,91 @@
   // settled. Wait until the element's viewport position actually stops moving
   // (stable across two frames) before trusting the rect. Capped so a container
   // that never quite settles can't hang the step.
-  function waitForScrollSettled(node, maxMs = 1200) {
+  function waitForScrollSettled(node, maxMs = 1500) {
     return new Promise((resolve) => {
-      let last = node.getBoundingClientRect().top;
-      let stable = 0;
       const startedAt = Date.now();
+      let last = node.getBoundingClientRect().top;
+      let lastY = window.scrollY;
+      let stable = 0;
+      // MIN_MS is the whole point: a smooth scrollIntoView does NOT necessarily
+      // begin on the very next frame, so sampling straight away sees the element
+      // sitting still at its PRE-scroll position and "settles" before the page has
+      // moved at all — which is what left the cursor off-target. Refuse to settle
+      // until the animation has had time to start, then require several genuinely
+      // still frames. Track the window scroll too, for elements whose own top
+      // happens to stay put while an ancestor scrolls.
+      const MIN_MS = 220;
+      const NEED_STABLE = 3;
       const tick = () => {
         const top = node.getBoundingClientRect().top;
-        if (Math.abs(top - last) < 0.5) {
-          if (++stable >= 2) return resolve();
-        } else {
-          stable = 0;
-        }
+        const y = window.scrollY;
+        if (Math.abs(top - last) < 0.5 && Math.abs(y - lastY) < 0.5) stable++;
+        else stable = 0;
         last = top;
-        if (Date.now() - startedAt > maxMs) return resolve();
+        lastY = y;
+        const elapsed = Date.now() - startedAt;
+        if ((stable >= NEED_STABLE && elapsed >= MIN_MS) || elapsed > maxMs) return resolve();
         requestAnimationFrame(tick);
       };
       requestAnimationFrame(tick);
     });
   }
 
-  function moveCursorToNode(node) {
+  // `position: fixed` is meant to resolve against the viewport — but if ANY
+  // ancestor of our root has a transform / filter / perspective / will-change
+  // (extremely common on client sites: page-transition wrappers, slide-out mobile
+  // menus, GPU-promotion hacks), it resolves against THAT element instead, and
+  // every viewport coordinate we set lands off by exactly the page scroll. That is
+  // the "cursor is misaligned once you scroll" bug.
+  //
+  // Rather than trying to sniff out every CSS trigger, measure it: `originProbe`
+  // is a 0×0 fixed element pinned to (0,0) of whatever our containing block turns
+  // out to be. Its viewport rect IS that block's origin, so subtracting it maps
+  // true viewport coords onto whatever space our overlays actually live in. Costs
+  // one rect read, is always current, and needs no knowledge of why it shifted.
+  function overlayOffset() {
+    if (!originProbe) return { x: 0, y: 0 };
+    const r = originProbe.getBoundingClientRect();
+    return { x: -r.left, y: -r.top };
+  }
+
+  function cursorHotspot() {
+    const r = cursor.getBoundingClientRect();
+    const cs = getComputedStyle(cursor);
+    // undo the art's negative margin so we compare the fingertip, not the box corner
+    return { x: r.left - parseFloat(cs.marginLeft || 0), y: r.top - parseFloat(cs.marginTop || 0) };
+  }
+
+  // Park the hand over the middle of an element, in true viewport coords.
+  function placeCursorAt(node) {
+    const rect = node.getBoundingClientRect();
+    const x = rect.left + rect.width / 2;
+    const y = rect.top + rect.height / 2;
+    const off = overlayOffset();
+    wakeCursor();
+    cursor.classList.toggle("nn-cursor-left", x > window.innerWidth - 250);
+    cursor.classList.toggle("nn-cursor-above", y > window.innerHeight - 100);
+    cursor.style.transform = `translate(${x + off.x}px, ${y + off.y}px)`;
+    return { x, y };
+  }
+
+  async function moveCursorToNode(node) {
     node.scrollIntoView({ behavior: "smooth", block: "center" });
-    return waitForScrollSettled(node).then(() => {
-      const rect = node.getBoundingClientRect();
-      const x = rect.left + rect.width / 2;
-      const y = rect.top + rect.height / 2;
-      wakeCursor();
-      cursor.classList.toggle("nn-cursor-left", x > window.innerWidth - 250);
-      cursor.classList.toggle("nn-cursor-above", y > window.innerHeight - 100);
-      cursor.style.transform = `translate(${x}px, ${y}px)`;
-      return sleep(650); // let the cursor glide
-    });
+    await waitForScrollSettled(node);
+    placeCursorAt(node);
+    await sleep(650); // let the cursor glide
+    // Final correction, measured rather than assumed: compare where the fingertip
+    // actually ended up against the element's CURRENT centre. Catches anything the
+    // origin probe can't — layout that shifted mid-glide (lazy images, webfonts, a
+    // sticky header collapsing) or momentum scroll still bleeding off.
+    const rect = node.getBoundingClientRect();
+    const hot = cursorHotspot();
+    const dx = rect.left + rect.width / 2 - hot.x;
+    const dy = rect.top + rect.height / 2 - hot.y;
+    if (Math.hypot(dx, dy) > 3) {
+      placeCursorAt(node);
+      await sleep(240);
+    }
   }
 
   async function flashClick(node) {
@@ -1936,9 +2031,10 @@
 
   function pulseHighlight(node, ms = 1400) {
     const rect = node.getBoundingClientRect();
+    const off = overlayOffset(); // the ring is fixed-positioned too — same correction
     const ring = el("div", { className: "nn-ring" }, {
-      left: rect.left - 4 + "px",
-      top: rect.top - 4 + "px",
+      left: rect.left - 4 + off.x + "px",
+      top: rect.top - 4 + off.y + "px",
       width: rect.width + 8 + "px",
       height: rect.height + 8 + "px",
     });
@@ -2906,6 +3002,10 @@
     }
     @keyframes nn-spin { to { transform: rotate(360deg); } }
 
+    /* Reference point for overlayOffset(). Deliberately bare: no transform, no
+       transition, no size — its only job is to report where our fixed-position
+       containing block actually starts in viewport space. */
+    .nn-origin { position: fixed; left: 0; top: 0; width: 0; height: 0; pointer-events: none; opacity: 0; }
     .nn-cursor {
       position: fixed; left: 0; top: 0; z-index: 2147483600; pointer-events: none;
       width: 74px; height: 44px; margin: -1px 0 0 -10px; opacity: 0;
