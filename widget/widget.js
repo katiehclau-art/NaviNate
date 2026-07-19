@@ -771,6 +771,8 @@
     state.undoDraft = {
       command: text,
       startUrl: window.location.href,
+      startHistoryLength: window.history.length,
+      navSteps: 0,
       scrollX: window.scrollX,
       scrollY: window.scrollY,
       entries: [],
@@ -1107,6 +1109,12 @@
     renderUndo();
   }
 
+  function recordUndoNavigationStep() {
+    if (!state.undoDraft) return;
+    state.undoDraft.navSteps = (state.undoDraft.navSteps || 0) + 1;
+    persist();
+  }
+
   function findUndoNode(entry) {
     return entry.targetId ? findByAgentId(entry.targetId) : null;
   }
@@ -1158,6 +1166,51 @@
     recordUndoComplete(transaction);
   }
 
+  function waitForUrl(targetUrl, timeoutMs = 1600) {
+    return new Promise((resolve) => {
+      if (window.location.href === targetUrl) return resolve(true);
+      let done = false;
+      const cleanup = () => {
+        window.removeEventListener("popstate", check);
+        window.removeEventListener("hashchange", check);
+        window.removeEventListener("pageshow", check);
+      };
+      const finish = (value) => {
+        if (done) return;
+        done = true;
+        cleanup();
+        resolve(value);
+      };
+      const check = () => {
+        if (window.location.href === targetUrl) finish(true);
+      };
+      window.addEventListener("popstate", check);
+      window.addEventListener("hashchange", check);
+      window.addEventListener("pageshow", check);
+      window.setTimeout(() => finish(window.location.href === targetUrl), timeoutMs);
+    });
+  }
+
+  async function returnToUndoStart(transaction) {
+    SS.setItem(PENDING_UNDO_KEY, JSON.stringify(transaction));
+    if (voice) voice.armHandoff();
+
+    const steps = Number(transaction.navSteps || 0);
+    if (steps > 0 && window.history.length > Number(transaction.startHistoryLength || 0)) {
+      window.history.go(-steps);
+      if (await waitForUrl(transaction.startUrl)) {
+        SS.removeItem(PENDING_UNDO_KEY);
+        await sleep(250);
+        await applyUndoTransaction(transaction);
+      } else if (window.location.href !== transaction.startUrl) {
+        window.location.assign(transaction.startUrl);
+      }
+      return;
+    }
+
+    window.location.assign(transaction.startUrl);
+  }
+
   // Returns a short note describing what was reversed (the voice agent speaks it).
   async function undoLastCommand() {
     if (busy) return "I'm in the middle of something — give me a second.";
@@ -1170,9 +1223,7 @@
     persist();
     try {
       if (window.location.href !== transaction.startUrl) {
-        SS.setItem(PENDING_UNDO_KEY, JSON.stringify(transaction));
-        if (voice) voice.armHandoff();
-        window.location.href = transaction.startUrl;
+        await returnToUndoStart(transaction);
         return `Taking them back to the previous page to undo "${transaction.command}".`;
       }
       await applyUndoTransaction(transaction);
@@ -1353,6 +1404,49 @@
     return !!linkHref(node);
   }
 
+  function highCommitmentActionReason(node) {
+    if (!node) return "";
+    const ownText = [
+      elementText(node),
+      node.getAttribute && node.getAttribute("aria-label"),
+      node.getAttribute && node.getAttribute("title"),
+      node.getAttribute && node.getAttribute("value"),
+      node.getAttribute && node.getAttribute("name"),
+      node.id,
+      node.className && typeof node.className === "string" ? node.className : "",
+    ]
+      .filter(Boolean)
+      .join(" ");
+    const form = node.closest && node.closest("form");
+    const formText = form
+      ? [
+          form.getAttribute("aria-label"),
+          form.getAttribute("name"),
+          form.getAttribute("id"),
+          form.getAttribute("action"),
+          (form.innerText || "").slice(0, 600),
+        ].filter(Boolean).join(" ")
+      : "";
+    const text = `${ownText} ${formText}`.replace(/\s+/g, " ").toLowerCase();
+    const isSubmitControl =
+      node.tagName === "BUTTON" && (!node.type || node.type === "submit") ||
+      node.tagName === "INPUT" && /^(submit|image)$/i.test(node.type || "");
+    const paymentContext = /\b(pay|payment|card|billing|checkout|cart|order|purchase|booking|reservation|subscribe|subscription|invoice)\b/.test(text);
+    const finalCommitment =
+      /\b(place|submit|confirm|complete|finish|finalize|send|pay|purchase|buy|order|book|reserve|subscribe)\b/.test(text) &&
+      /\b(order|payment|purchase|checkout|booking|reservation|subscription|application|form|request|quote|invoice)\b/.test(text);
+    const exactDanger =
+      /\b(place order|submit order|submit payment|pay now|complete purchase|complete order|confirm purchase|confirm order|finalize purchase|buy now|book now|reserve now|subscribe now)\b/.test(text);
+
+    if (exactDanger || finalCommitment || (isSubmitControl && paymentContext)) {
+      return "I stopped before the final submit/payment step. Please review and click it yourself if everything looks right.";
+    }
+    if (isSubmitControl && /\b(submit|send|confirm|complete|finish|finalize)\b/.test(text)) {
+      return "I stopped before submitting the form. Please review and submit it yourself if everything looks right.";
+    }
+    return "";
+  }
+
   // A hash-only URL change (same document, no reload) is NOT a navigation the
   // loop should stop and wait for — boot() only re-runs on a real page load, so
   // treating an in-page anchor / hash-router jump as a navigation freezes the
@@ -1384,6 +1478,7 @@
         window.addEventListener("pagehide", onLeave);
         window.addEventListener("beforeunload", onLeave);
         armContinuation(reason || `Navigating to ${label || "another page"}…`);
+        recordUndoNavigationStep();
         node.click();
         await sleep(400); // give a redirect time to begin unloading
         window.removeEventListener("pagehide", onLeave);
@@ -1396,9 +1491,10 @@
         // NEXT step in place rather than freeze waiting for a reload.
         const href = linkHref(node);
         if (href) {
-          window.location.href = new URL(href, window.location.href).href; // continuation still armed
+          window.location.assign(new URL(href, window.location.href).href); // continuation still armed
           return { navigated: true, label, executed: true };
         }
+        if (state.undoDraft) state.undoDraft.navSteps = Math.max(0, (state.undoDraft.navSteps || 0) - 1);
         disarmContinuation();
         return { navigated: false, label, executed: true };
       }
@@ -1413,7 +1509,8 @@
         }
         await letVoiceFinishSpeaking();
         armContinuation(reason || `Navigating to ${url}…`);
-        window.location.href = dest.url;
+        recordUndoNavigationStep();
+        window.location.assign(dest.url);
         return { navigated: true, label: url, executed: true };
       }
       return skip;
@@ -1426,6 +1523,11 @@
     await moveCursorToNode(node);
 
     if (type === "click") {
+      const blocked = highCommitmentActionReason(node);
+      if (blocked) {
+        await flashClick(node);
+        return { navigated: false, label, executed: false, failure: blocked };
+      }
       if (likelyNavigates(node)) await letVoiceFinishSpeaking();
       await flashClick(node);
       // A click can navigate asynchronously — an <a href>, a form submit, or a JS
@@ -1440,6 +1542,8 @@
       window.addEventListener("pagehide", onLeave);
       window.addEventListener("beforeunload", onLeave);
       armContinuation(reason);
+      const href = linkHref(node);
+      if (href) recordUndoNavigationStep();
       realClick(node);
       await sleep(400); // give a redirect time to begin unloading
       window.removeEventListener("pagehide", onLeave);
@@ -1451,10 +1555,9 @@
         // attribute the browser doesn't follow on its own. Honour it as a link
         // and go there. It came from the live DOM (not the model), so no
         // hallucination/404 guard is needed — just follow it.
-        const href = linkHref(node);
         if (href) {
           await letVoiceFinishSpeaking();
-          window.location.href = new URL(href, window.location.href).href; // continuation already armed
+          window.location.assign(new URL(href, window.location.href).href); // continuation already armed
           return { navigated: true, label, executed: true };
         }
         disarmContinuation();

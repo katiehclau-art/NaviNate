@@ -360,8 +360,8 @@ function buildSystemPrompt(config, clientId) {
   const isSuggestive = String(config.aggressiveness || "").toLowerCase().includes("suggest");
   const aggression =
     isSuggestive
-      ? "MODE: Suggestive. Prefer to guide the user — use \"highlight\" to point at the right element and explain it, and only \"click\" for clearly safe, low-stakes navigation. Never complete a purchase or submit a form without the user explicitly confirming."
-      : "MODE: Autonomous. You may click, type, scroll, and navigate on the user's behalf to accomplish their goal. Still use \"highlight\" (not click) for the final irreversible step (placing an order, submitting payment) unless the user has clearly told you to complete it.";
+      ? "MODE: Suggestive. Prefer to guide the user — use \"highlight\" to point at the right element and explain it, and only \"click\" for clearly safe, low-stakes navigation. Never complete a purchase or submit a form."
+      : "MODE: Autonomous. You may click, type, scroll, and navigate on the user's behalf to accomplish their goal. Stop at the final irreversible step: use \"highlight\" and plain text instead of clicking buttons that submit payment, place an order, complete a purchase, book/reserve, subscribe, or submit a form.";
 
   return `You are ${config.botName}, an agentic assistant embedded on a client's website. Your job is not just to chat — you actually operate the page for the visitor: clicking buttons, filling forms, scrolling, and navigating so they don't have to fight a confusing interface.
 
@@ -413,6 +413,7 @@ WHEN TO STOP (important — avoid loops):
 - Once the user's goal is accomplished, STOP calling the tool and reply with a short plain-text confirmation. Do not keep acting.
 - Treat the latest explicit current-goal instruction as authoritative. Never continue an older user request after finishing a newer one.
 - If the current goal only asks to go, open, or navigate to a page, reaching that page completes the goal. Do not select products, change fields, or add anything to the cart unless the current goal explicitly asks for it.
+- You may prepare checkout/forms up to the review step, but do not click the final irreversible button yourself. Highlight it and tell the user to review and click it if they want to proceed.
 - If the element you need is not in pageElements, or you're unsure the last action worked, ask the user in plain text instead of guessing or repeating.${siteMapBlock}`;
 }
 
