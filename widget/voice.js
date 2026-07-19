@@ -285,6 +285,24 @@
       state.pending = [];
     }
 
+    // "I'm done talking." The ElevenLabs protocol has no end-of-turn or
+    // commit-audio message — turn-taking is entirely server-side VAD — so the
+    // only lever we have is the audio we send. We flush a short burst of digital
+    // silence: prepended to the stream it gives the VAD the speech→silence
+    // transition it needs to close the turn now, rather than waiting out its own
+    // end-of-speech timer. Crucially we do NOT gate the live mic while doing it —
+    // stopping the outgoing stream is what desyncs ElevenLabs and leaves it deaf
+    // to the visitor afterwards. The burst alone supplies the gap; whatever the
+    // mic sends next is simply the start of the next turn.
+    function endTurn() {
+      if (state.muted) return; // nothing being captured to finish
+      if (!state.ws || state.ws.readyState !== WebSocket.OPEN) return;
+      const rate = state.inRate || 16000;
+      const perChunk = Math.round((rate * CHUNK_MS) / 1000);
+      const silence = b64.encode(new Uint8Array(perChunk * 2)); // 16-bit PCM zeros
+      for (let i = 0; i < 7; i++) send({ user_audio_chunk: silence }); // ~900ms
+    }
+
     // ---- socket ----------------------------------------------------------
     // Anything sent before the socket finishes opening used to vanish. That
     // window is exactly when a resumed session has the most to say (the page
@@ -386,6 +404,19 @@
         // deciding to stop talking.
         console.warn(`[NaviNate] voice socket closed (code ${evt.code}) ${evt.reason || ""}`);
         const clean = evt.code === 1000 || evt.code === 1005;
+        // ElevenLabs closes with a reason like "This request exceeds your quota
+        // limit." when the account is out of credits. Retrying can't fix that —
+        // it just fails again — and the generic "connection dropped" copy makes it
+        // look like a broken mic. Detect it, stop, and say what's actually wrong.
+        if (/quota|limit|payment|credit|unauthor/i.test(evt.reason || "")) {
+          stopMic();
+          state.retries = 0;
+          setStatus("error");
+          SS.removeItem(ACTIVE_KEY);
+          host.onError && host.onError("Voice is temporarily unavailable — the voice service has hit its usage limit. You can still type to me.");
+          host.onEnded && host.onEnded();
+          return;
+        }
         if (!clean && state.retries < 2) {
           state.retries++;
           armHandoff(); // carry the thread into the new socket
@@ -652,6 +683,7 @@
       levels,
       isMuted: () => state.muted,
       mute: (on) => { state.muted = !!on; if (state.muted) state.micLevel = 0; },
+      endTurn,
       // The agent should hear about anything the visitor does themselves, too —
       // a click they made, a page they browsed to on their own.
       noteUserAction: (text) => sendContext(text, "user-action"),

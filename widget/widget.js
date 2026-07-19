@@ -161,6 +161,21 @@
   };
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+  // fetch that rejects instead of hanging forever. The agent loop awaits /chat on
+  // every step; with no cap, a slow or stalled backend leaves `busy` stuck true and
+  // the UI frozen on "Working…" (the launcher pulsing) with no way out — the loop's
+  // `finally` that resets `busy` never runs because the await never returns. On
+  // timeout we abort, which throws, which the loop catches and recovers from.
+  async function fetchWithTimeout(url, opts = {}, ms = 45000) {
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), ms);
+    try {
+      return await fetch(url, { ...opts, signal: ctrl.signal });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   // The launcher/header icon is always the NaviNate brand mark (served alongside
   // the demo site, so it works from the same origin the widget was loaded from).
   // No emoji override — the brand icon is the identity.
@@ -168,9 +183,36 @@
     return `<img class="nn-icon-img ${cls}" src="${BACKEND}/assets/navinate-icon.png" alt="${escapeHtml(theme.botName)}" />`;
   }
 
+  // Inline Lucide icons (lucide.dev, ISC-licensed) replace the emoji glyphs the
+  // controls used to render. They're inlined rather than pulled from a CDN so the
+  // widget stays self-contained and survives strict client CSPs. Each entry is the
+  // inner markup of a 24×24 stroke icon; ic() wraps it with the shared Lucide
+  // attributes so every icon inherits the button's currentColor and scales off its
+  // font-size (see .nn-ic).
+  const LUCIDE = {
+    mic: '<path d="M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3Z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" x2="12" y1="19" y2="22"/>',
+    "mic-off": '<line x1="2" x2="22" y1="2" y2="22"/><path d="M18.89 13.23A7.12 7.12 0 0 0 19 12v-2"/><path d="M5 10v2a7 7 0 0 0 12 5"/><path d="M15 9.34V5a3 3 0 0 0-5.68-1.33"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12"/><line x1="12" x2="12" y1="19" y2="22"/>',
+    "volume-2": '<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 0 1 0 7.07"/><path d="M19.07 4.93a10 10 0 0 1 0 14.14"/>',
+    keyboard: '<path d="M10 8h.01"/><path d="M12 12h.01"/><path d="M14 8h.01"/><path d="M16 12h.01"/><path d="M18 8h.01"/><path d="M6 8h.01"/><path d="M7 16h10"/><path d="M8 12h.01"/><rect width="20" height="16" x="2" y="4" rx="2"/>',
+    check: '<path d="M20 6 9 17l-5-5"/>',
+    x: '<path d="M18 6 6 18"/><path d="m6 6 12 12"/>',
+    "thumbs-up": '<path d="M7 10v12"/><path d="M15 5.88 14 10h5.83a2 2 0 0 1 1.92 2.56l-2.33 8A2 2 0 0 1 17.5 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h2.76a2 2 0 0 0 1.79-1.11L12 2a3.13 3.13 0 0 1 3 3.88Z"/>',
+    "thumbs-down": '<path d="M17 14V2"/><path d="M9 18.12 10 14H4.17a2 2 0 0 1-1.92-2.56l2.33-8A2 2 0 0 1 6.5 2H20a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-2.76a2 2 0 0 0-1.79 1.11L12 22a3.13 3.13 0 0 1-3-3.88Z"/>',
+    "rotate-ccw": '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/>',
+    minus: '<path d="M5 12h14"/>',
+    "undo-2": '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5 5.5 5.5 0 0 1-5.5 5.5H11"/>',
+    send: '<line x1="22" x2="11" y1="2" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/>',
+    pause: '<rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/>',
+    play: '<polygon points="6 3 20 12 6 21 6 3"/>',
+  };
+  function ic(name, cls) {
+    return `<svg class="nn-ic${cls ? " " + cls : ""}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">${LUCIDE[name] || ""}</svg>`;
+  }
+
   // ---- build the UI --------------------------------------------------------
   let root, panel, log, input, sendBtn, launcher, cursor, cursorCaption, statusEl, suggestionsEl, undoBtn, micBtn;
-  let voiceStage, captionEl, orbEl, vStateEl, vMicBtn;
+  let fogTop, fogBottom;
+  let voiceStage, captionEl, orbEl, vStateEl, vMicBtn, vDoneBtn;
   let voice = null; // the ElevenLabs voice controller, lazy-loaded on first use
 
   function buildUI() {
@@ -181,6 +223,20 @@
     const style = el("style");
     style.textContent = css();
     root.appendChild(style);
+
+    // Titles use DM Serif Display, body copy DM Serif Text — both Google Fonts.
+    // Fonts are inherently global (the browser keys them by family name, not by
+    // subtree), so this one link lives on the host document's <head> rather than
+    // inside our scoped root. Guarded so multiple widget instances don't stack it.
+    if (!document.getElementById("nn-fonts")) {
+      document.head.appendChild(el("link", { rel: "preconnect", href: "https://fonts.googleapis.com" }));
+      document.head.appendChild(el("link", { rel: "preconnect", href: "https://fonts.gstatic.com", crossOrigin: "anonymous" }));
+      document.head.appendChild(el("link", {
+        id: "nn-fonts",
+        rel: "stylesheet",
+        href: "https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=Roboto+Serif:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap",
+      }));
+    }
 
     // Position (bottom-right default; bottom-left if the client configured it).
     if (theme.widgetPosition === "bottom-left") root.classList.add("nn-left");
@@ -201,22 +257,33 @@
       <div class="nn-header">
         <span class="nn-title">${iconMarkup("nn-header-icon")} ${escapeHtml(theme.botName)}</span>
         <div class="nn-header-actions">
-          <button class="nn-reset" title="Reset chat" aria-label="Reset chat">↺</button>
-          <button class="nn-min" title="Minimize" aria-label="Minimize">–</button>
+          <button class="nn-reset" title="Reset chat" aria-label="Reset chat">${ic("rotate-ccw")}</button>
+          <button class="nn-min" title="Minimize" aria-label="Minimize">${ic("minus")}</button>
         </div>
       </div>
-      <div class="nn-log"></div>
+      <div class="nn-logwrap">
+        <div class="nn-log"></div>
+        <div class="nn-fog nn-fog-top" aria-hidden="true"></div>
+        <div class="nn-fog nn-fog-bottom" aria-hidden="true"></div>
+      </div>
       <div class="nn-status"></div>
-      <div class="nn-undo-row"><button class="nn-undo" type="button">↶ Undo last command</button></div>
+      <div class="nn-undo-row"><button class="nn-undo" type="button">${ic("undo-2")}<span>Undo last command</span></button></div>
       <div class="nn-suggestions"></div>
       <div class="nn-inputbar">
-        <button class="nn-mic" title="Talk to me" aria-label="Start a voice conversation">🎙</button>
+        <button class="nn-mic" title="Talk to me" aria-label="Start a voice conversation">${ic("mic")}</button>
         <textarea class="nn-input" placeholder="Ask me to find or do something…" rows="1"></textarea>
-        <button class="nn-send">➤</button>
+        <button class="nn-send" aria-label="Send">${ic("send")}</button>
       </div>`;
     root.appendChild(panel);
 
     log = panel.querySelector(".nn-log");
+    fogTop = panel.querySelector(".nn-fog-top");
+    fogBottom = panel.querySelector(".nn-fog-bottom");
+    // Scroll drives the fog; the observer covers content that grows/streams in
+    // without the scroll position itself moving (e.g. a reply arriving while the
+    // visitor is reading further up).
+    log.addEventListener("scroll", updateFog, { passive: true });
+    new MutationObserver(updateFog).observe(log, { childList: true, subtree: true, characterData: true });
     input = panel.querySelector(".nn-input");
     sendBtn = panel.querySelector(".nn-send");
     statusEl = panel.querySelector(".nn-status");
@@ -254,9 +321,10 @@
       </div>
       <div class="nn-vstate"></div>
       <div class="nn-vcontrols">
-        <button class="nn-vkeyboard" title="Switch to typing" aria-label="Switch to typing">⌨</button>
-        <button class="nn-vmic" title="Mute microphone" aria-label="Mute microphone">🎙</button>
-        <button class="nn-vend" title="End voice chat" aria-label="End voice chat">✕</button>
+        <button class="nn-vkeyboard" title="Switch to typing" aria-label="Switch to typing">${ic("keyboard")}</button>
+        <button class="nn-vmic" title="Mute microphone" aria-label="Mute microphone">${ic("mic")}</button>
+        <button class="nn-vdone" title="I'm done talking" aria-label="I'm done talking — let the agent reply" disabled>${ic("check")}</button>
+        <button class="nn-vend" title="End voice chat" aria-label="End voice chat">${ic("x")}</button>
       </div>`;
     root.appendChild(voiceStage);
 
@@ -265,6 +333,8 @@
     vStateEl = voiceStage.querySelector(".nn-vstate");
     vMicBtn = voiceStage.querySelector(".nn-vmic");
     vMicBtn.onclick = toggleMute;
+    vDoneBtn = voiceStage.querySelector(".nn-vdone");
+    vDoneBtn.onclick = endTurn;
     voiceStage.querySelector(".nn-vend").onclick = () => voice && voice.stop();
     // Hand back to the keyboard without hanging up — the call keeps running and
     // the mic button in the input bar brings the stage back.
@@ -345,6 +415,19 @@
     }
   }
 
+  // Show the top haze once anything has scrolled up out of view, and the bottom
+  // haze while there's still more below — but never at the very ends, so the
+  // first and last messages meet the panel edge crisply. The 4px slack absorbs
+  // sub-pixel scroll rounding that would otherwise flicker the fog at the limits.
+  function updateFog() {
+    if (!log || !fogTop || !fogBottom) return;
+    const top = log.scrollTop;
+    const max = log.scrollHeight - log.clientHeight;
+    const scrollable = max > 4;
+    fogTop.classList.toggle("nn-on", scrollable && top > 4);
+    fogBottom.classList.toggle("nn-on", scrollable && top < max - 4);
+  }
+
   function toggle() {
     state.open ? closePanel() : openPanel();
   }
@@ -355,6 +438,7 @@
     persist();
     input && input.focus();
     log.scrollTop = log.scrollHeight;
+    updateFog(); // the panel was display:none until now, so recompute with real heights
     // Count each session's first open — the numerator for "% of visitors who
     // actually engage the assistant".
     if (SS.getItem("navinate.opened") !== "1") {
@@ -836,7 +920,7 @@
         setStatus(state.autoSteps === 0 ? "Thinking…" : "Working…");
         const pageElements = scanDom();
         const pageText = getPageText();
-        const res = await fetch(BACKEND + "/chat", {
+        const res = await fetchWithTimeout(BACKEND + "/chat", {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({
@@ -1312,8 +1396,8 @@
       };
       return b;
     };
-    row.appendChild(mk("👍", "up"));
-    row.appendChild(mk("👎", "down"));
+    row.appendChild(mk(ic("thumbs-up"), "up"));
+    row.appendChild(mk(ic("thumbs-down"), "down"));
     // Read-it-to-me. Pointless while a live conversation is running (the agent
     // already said it), so only offer it on the text path.
     if (theme.voiceEnabled && !(voice && voice.isActive())) {
@@ -1360,10 +1444,12 @@
   // gave us counts — a network hiccup must never look like a missing page.
   async function urlIsMissing(href) {
     try {
-      const res = await fetch(href, { method: "HEAD", redirect: "follow" });
+      // Short cap: this gates a navigation, so a stalled preflight must not hang
+      // the whole step. A timeout aborts and is treated as "not evidence of 404".
+      const res = await fetchWithTimeout(href, { method: "HEAD", redirect: "follow" }, 5000);
       return res.status === 404 || res.status === 410;
     } catch (_) {
-      return false; // offline / blocked / CORS — not evidence of anything
+      return false; // offline / blocked / CORS / timeout — not evidence of anything
     }
   }
 
@@ -1713,9 +1799,36 @@
     hideCursorCaption(2600); // fades on its own; the next real action cancels it
   }
 
+  // A smooth scrollIntoView keeps animating for a few hundred ms — longer for a
+  // big jump. Reading the element's rect before that finishes (the old fixed
+  // 120ms wait) captured its MID-scroll position, so the cursor glided to where
+  // the element used to be and ended up visibly off-target once the scroll
+  // settled. Wait until the element's viewport position actually stops moving
+  // (stable across two frames) before trusting the rect. Capped so a container
+  // that never quite settles can't hang the step.
+  function waitForScrollSettled(node, maxMs = 1200) {
+    return new Promise((resolve) => {
+      let last = node.getBoundingClientRect().top;
+      let stable = 0;
+      const startedAt = Date.now();
+      const tick = () => {
+        const top = node.getBoundingClientRect().top;
+        if (Math.abs(top - last) < 0.5) {
+          if (++stable >= 2) return resolve();
+        } else {
+          stable = 0;
+        }
+        last = top;
+        if (Date.now() - startedAt > maxMs) return resolve();
+        requestAnimationFrame(tick);
+      };
+      requestAnimationFrame(tick);
+    });
+  }
+
   function moveCursorToNode(node) {
     node.scrollIntoView({ behavior: "smooth", block: "center" });
-    return sleep(120).then(() => {
+    return waitForScrollSettled(node).then(() => {
       const rect = node.getBoundingClientRect();
       const x = rect.left + rect.width / 2;
       const y = rect.top + rect.height / 2;
@@ -1854,8 +1967,88 @@
 
   // What the voice agent "sees". It has no DOM, so this is its only window onto
   // the page the visitor is actually looking at.
+  // The label/legend inside a field's own wrapper. scanDom's `context` is no good
+  // for this — it climbs to the nearest card (often the whole form), so every
+  // field comes back with the same wall of text. A tight wrapper (.field, a
+  // fieldset, a list item) holds just this field's question.
+  function wrapperLabel(node, selectors) {
+    const wrap = node.closest(selectors);
+    if (!wrap) return "";
+    const el = wrap.querySelector("legend, label");
+    const t = el && (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
+    return t ? t.slice(0, 80) : "";
+  }
+
+  // The plain-language question for a single fillable field, best source first:
+  // an associated <label>, an aria-label, the label in its wrapper, then the
+  // placeholder or name as a last resort. This is what the voice agent asks aloud.
+  function fieldQuestion(node) {
+    return (
+      labelText(node) ||
+      (node.getAttribute && node.getAttribute("aria-label")) ||
+      wrapperLabel(node, ".field, .form-group, .form-row, .form-field, .form-item, fieldset, li") ||
+      (node.getAttribute && (node.getAttribute("placeholder") || node.getAttribute("name"))) ||
+      ""
+    ).replace(/\s+/g, " ").trim().slice(0, 80);
+  }
+
+  // The interactive fields the voice agent can fill, distilled from the same DOM
+  // scan the text agent uses. getPageText() alone gives the questions as loose
+  // prose but never says WHICH fields are still empty — so on an application form
+  // the voice agent couldn't tell there was anything to collect. This makes the
+  // fields and their empty/answered state explicit so it can walk the visitor
+  // through them one at a time.
+  function describeFieldsForVoice() {
+    const skip = new Set(["hidden", "submit", "button", "image", "reset", "file"]);
+    const lines = [];
+    for (const e of scanDom()) {
+      const type = String(e.type || "").toLowerCase();
+      const fillable =
+        e.tag === "textarea" ||
+        e.tag === "select" ||
+        e.type === "slider" ||
+        (e.tag === "input" && !skip.has(type));
+      if (!fillable) continue;
+      const node = findByAgentId(e.id);
+      if (!node) continue;
+      const isChoice = type === "radio" || type === "checkbox";
+      let label, state;
+      if (isChoice) {
+        // The group is the question ("Department"), the element's own text is the
+        // option ("Sales"). Show both so the agent can ask "which department?".
+        const group = wrapperLabel(node, "fieldset, .field, .form-group, .form-row");
+        const opt = (e.text || "").replace(/\s+/g, " ").slice(0, 40) || "(option)";
+        label = group ? `${group} → ${opt}` : opt;
+        state = e.checked ? "SELECTED" : "not selected";
+      } else {
+        label = fieldQuestion(node) || "(unlabeled)";
+        state = e.value != null && e.value !== "" ? `answered: "${String(e.value).slice(0, 60)}"` : "EMPTY";
+      }
+      const opts =
+        e.options && e.options.length
+          ? " — options: " + e.options.map((o) => o.label).filter(Boolean).slice(0, 8).join(", ")
+          : "";
+      lines.push(`- ${label} [${type || e.tag}] — ${state}${opts}`);
+      if (lines.length >= 30) break;
+    }
+    return lines.join("\n");
+  }
+
+  // What the voice agent "reads": the visible text plus the concrete fillable
+  // fields, so it can collect answers on a form instead of announcing it opened
+  // one and going quiet.
+  function voicePageText() {
+    const fields = describeFieldsForVoice();
+    return (
+      getPageText() +
+      (fields
+        ? "\n\nFillable fields on this page — for any marked EMPTY that the visitor's goal needs, ask them for it (one question at a time), then fill it in:\n" + fields
+        : "")
+    );
+  }
+
   function describePageForVoice() {
-    return `The visitor is on "${document.title}" (${location.href}). Visible content:\n${getPageText()}`;
+    return `The visitor is on "${document.title}" (${location.href}). Visible content:\n${voicePageText()}`;
   }
 
   async function ensureVoice() {
@@ -1867,7 +2060,7 @@
       track,
       // The spoken entry point into the exact same agent loop the text box uses.
       runGoal: (goal) => runGoal(goal, { via: "voice" }),
-      readPage: () => ({ url: location.href, title: document.title, text: getPageText() }),
+      readPage: () => ({ url: location.href, title: document.title, text: voicePageText() }),
       undo: () => undoLastCommand(),
       // Speech shows up in the chat log as it happens, so the visitor has a
       // transcript to scroll back through and deaf/HoH users aren't shut out.
@@ -1947,7 +2140,7 @@
     const live = voice && voice.isActive();
     micBtn.title = live ? "Back to voice mode" : "Talk to me";
     micBtn.setAttribute("aria-label", micBtn.title);
-    micBtn.innerHTML = live ? "🔊" : "🎙";
+    micBtn.innerHTML = live ? ic("volume-2") : ic("mic");
   }
 
   function startOrb() {
@@ -1988,10 +2181,30 @@
     const next = !voice.isMuted();
     voice.mute(next);
     vMicBtn.classList.toggle("nn-vmic-off", next);
-    vMicBtn.innerHTML = next ? "🔇" : "🎙";
+    vMicBtn.innerHTML = next ? ic("mic-off") : ic("mic");
     vMicBtn.title = next ? "Unmute microphone" : "Mute microphone";
     vMicBtn.setAttribute("aria-label", vMicBtn.title);
     if (vStateEl) vStateEl.textContent = next ? "Muted" : VOICE_LABELS[voice.status()] || "";
+    updateDoneBtn();
+  }
+
+  // The visitor tapping "done" ends their turn so the agent replies immediately
+  // instead of waiting on the silence timer. Only meaningful while it's actually
+  // their turn (listening, not muted); ignored otherwise.
+  function endTurn() {
+    if (!voice || !voice.isActive() || voice.isMuted()) return;
+    if (voice.status() !== "listening") return;
+    voice.endTurn();
+    if (vStateEl) vStateEl.textContent = "One sec…";
+    updateDoneBtn();
+  }
+
+  // "Done" is a no-op unless the visitor is mid-turn, so keep it dimmed and
+  // unclickable the rest of the time rather than letting it look live.
+  function updateDoneBtn() {
+    if (!vDoneBtn) return;
+    const canEnd = !!(voice && voice.isActive() && !voice.isMuted() && voice.status() === "listening");
+    vDoneBtn.disabled = !canEnd;
   }
 
   const VOICE_LABELS = {
@@ -2017,6 +2230,7 @@
     if (live && !voiceUIOn && status === "connecting") setVoiceUI(true);
     if (!live) setVoiceUI(false);
     updateMicButton();
+    updateDoneBtn();
     if (vStateEl && !(voice && voice.isMuted())) vStateEl.textContent = VOICE_LABELS[status] || "";
     if (orbEl) {
       orbEl.classList.toggle("nn-orb-working", status === "working");
@@ -2066,8 +2280,8 @@
     if (state !== "idle") btn.classList.add("nn-fb-" + state);
     btn.innerHTML =
       state === "loading" ? '<span class="nn-spin" aria-hidden="true"></span>' :
-      state === "playing" ? "⏸" :
-      state === "paused" ? "▶" : "🔊";
+      state === "playing" ? ic("pause") :
+      state === "paused" ? ic("play") : ic("volume-2");
     btn.title =
       state === "loading" ? "Preparing audio — click to cancel" :
       state === "playing" ? "Pause" :
@@ -2141,11 +2355,35 @@
   // ---- boot ----------------------------------------------------------------
   async function loadTheme() {
     try {
-      const res = await fetch(BACKEND + "/config?clientId=" + encodeURIComponent(CLIENT_ID));
+      // boot() awaits this before it builds any UI or resumes a continuation, so a
+      // stalled /config would mean no widget and no resume at all. Cap it and fall
+      // back to defaults rather than hanging the whole startup.
+      const res = await fetchWithTimeout(BACKEND + "/config?clientId=" + encodeURIComponent(CLIENT_ID), {}, 8000);
       if (res.ok) theme = { ...theme, ...(await res.json()) };
     } catch (_) {
       /* fall back to defaults */
     }
+  }
+
+  // Put the widget back into a usable state when a cross-page continuation cannot
+  // run to completion. Anything that leaves `acting` true strands the visitor: the
+  // panel stays minimized, the launcher pulses forever, the status line is frozen
+  // on the navigation notice, and no reply ever arrives — the only escape being a
+  // manual page reload (which wipes the mid-task flags). Always land somewhere the
+  // visitor can act from.
+  function recoverStalledContinuation(note) {
+    exitActingMode(); // stops the pulse and pops the panel back open
+    setStatus("");
+    if (state.goalVia === "voice" && voice && voice.isActive()) {
+      voice.reportGoalResult(note);
+    } else {
+      addBubble("assistant", note);
+      state.history.push({ role: "assistant", content: note });
+    }
+    state.activeGoal = "";
+    finishUndoCommand();
+    finishTaskChip(true);
+    persist();
   }
 
   async function boot() {
@@ -2222,11 +2460,24 @@
         // tool result died with the previous page's socket, so hand the outcome to
         // the voice agent explicitly — otherwise it never gets a turn and stays
         // silent for the rest of the conversation.
-        runTurn("").then((outcome) => {
-          if (outcome && !outcome.navigated && voice && voice.isActive()) {
-            voice.reportGoalResult(outcome.summary);
-          }
-        });
+        runTurn("")
+          .then((outcome) => {
+            if (outcome && !outcome.navigated && voice && voice.isActive()) {
+              voice.reportGoalResult(outcome.summary);
+            }
+          })
+          // runTurn handles its own errors, but an unhandled rejection here used to
+          // leave the widget pulsing in acting mode with nothing to recover it.
+          .catch((err) => {
+            console.error("[NaviNate] continuation failed:", err);
+            recoverStalledContinuation("Hmm, I lost my place after that page change. Mind trying again?");
+          });
+      } else {
+        // The step budget ran out exactly as we landed here. This used to fall
+        // through silently — continuation already disarmed, `acting` still true —
+        // so the launcher pulsed forever behind a status line that never changed
+        // and the visitor got no reply at all. Say so and hand control back.
+        recoverStalledContinuation("I've taken several steps — let me know if you'd like me to keep going.");
       }
     }
   }
@@ -2247,7 +2498,15 @@
   function css() {
     return `
     #navinate-root { all: initial; }
-    #navinate-root, #navinate-root * { box-sizing: border-box; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+    #navinate-root, #navinate-root * { box-sizing: border-box; font-family: "Roboto Serif", ui-serif, Georgia, "Times New Roman", serif; }
+    /* Titles in DM Serif Display. The #navinate-root prefix is load-bearing: the
+       base rule above carries an id, so a bare .nn-title would lose the font-family
+       cascade to it and fall back to the body face. */
+    #navinate-root .nn-title,
+    #navinate-root .nn-assistant h1, #navinate-root .nn-assistant h2, #navinate-root .nn-assistant h3,
+    #navinate-root .nn-assistant h4, #navinate-root .nn-assistant h5, #navinate-root .nn-assistant h6 {
+      font-family: "DM Serif Display", ui-serif, Georgia, serif;
+    }
     #navinate-root {
       --nn-accent: #4f46e5;
       /* Sky + liquid glass. Every surface is translucent white over a soft blue
@@ -2289,7 +2548,7 @@
       filter: drop-shadow(0 8px 20px rgba(0,0,0,.3)); transition: transform .15s ease;
     }
     .nn-header-icon {
-      display: inline-block; width: 24px; height: 24px; border-radius: 7px;
+      display: inline-block; width: 30px; height: 30px; border-radius: 7px;
       transform: scale(2.5); transform-origin: center;
     }
 
@@ -2337,7 +2596,7 @@
       border-bottom: 1px solid rgba(255,255,255,.5);
       box-shadow: 0 6px 20px rgba(23,72,110,.16), inset 0 1px 0 rgba(255,255,255,.55);
     }
-    .nn-title { font-weight: 600; font-size: 15px; display: flex; align-items: center; gap: 7px;
+    .nn-title { font-weight: 600; font-size: 21px; display: flex; align-items: center; gap: 9px;
       text-shadow: 0 1px 2px rgba(0,0,0,.12); }
     .nn-header-actions { display: flex; align-items: center; gap: 2px; }
     .nn-min, .nn-reset { background: transparent; border: none; color: #fff; cursor: pointer; line-height: 1; padding: 0 6px; border-radius: 8px; }
@@ -2345,8 +2604,29 @@
     .nn-reset { font-size: 17px; padding: 4px 7px; }
     .nn-min:hover, .nn-reset:hover { background: rgba(255,255,255,.24); }
 
+    /* --- Lucide icons (replace the old emoji glyphs) --- */
+    /* Scale off each button's font-size and inherit its colour via currentColor,
+       so an icon on the accent-filled send button is white and one on a glass
+       button is ink, exactly as the emoji were. Buttons that used to center a text
+       glyph now center the svg. */
+    .nn-ic { width: 1.15em; height: 1.15em; display: block; flex: none; }
+    .nn-send, .nn-mic, .nn-min, .nn-reset { display: grid; place-items: center; }
+    .nn-min { font-size: 19px; }
+    .nn-undo { display: inline-flex; align-items: center; gap: 6px; }
+    .nn-fb-btn { display: inline-flex; align-items: center; justify-content: center; gap: 4px; }
+
+    /* wraps the scroller so the fog overlays can sit at its fixed top/bottom
+       edges rather than scrolling away with the transcript */
+    .nn-logwrap { position: relative; flex: 1; min-height: 0; display: flex; flex-direction: column; }
     /* transparent so the panel's own sky shows through the conversation */
     .nn-log { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 16px; background: transparent; display: flex; flex-direction: column; gap: 10px; }
+    /* a soft haze that fades the transcript into the panel as it scrolls under the
+       header/footer — only shown when there's actually content hidden that way
+       (see updateFog), so the very top and very bottom stay crisp */
+    .nn-fog { position: absolute; left: 0; right: 0; height: 42px; pointer-events: none; opacity: 0; transition: opacity .22s ease; z-index: 3; }
+    .nn-fog-top { top: 0; background: linear-gradient(to bottom, rgba(247,251,255,.97), rgba(247,251,255,0)); }
+    .nn-fog-bottom { bottom: 0; background: linear-gradient(to top, rgba(247,251,255,.97), rgba(247,251,255,0)); }
+    .nn-fog.nn-on { opacity: 1; }
     .nn-log::-webkit-scrollbar { width: 8px; }
     .nn-log::-webkit-scrollbar-track { background: transparent; }
     .nn-log::-webkit-scrollbar-thumb { background: rgba(88,142,184,.28); border-radius: 8px; }
@@ -2392,7 +2672,7 @@
 
     .nn-status { padding: 6px 16px; font-size: 12.5px; color: var(--nn-ink-soft); background: transparent; display: none; font-style: italic; }
 
-    .nn-undo-row { display: none; justify-content: flex-end; padding: 7px 12px; background: transparent; border-top: 1px solid rgba(255,255,255,.6); }
+    .nn-undo-row { display: none; justify-content: flex-end; padding: 7px 12px; background: transparent; }
     .nn-undo {
       border: 1px solid var(--nn-edge); background: var(--nn-glass); color: var(--nn-ink);
       backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
@@ -2464,9 +2744,13 @@
     }
     .nn-task-live::before { animation: nn-task-pulse 1.4s ease-in-out infinite; }
     .nn-task-live { color: var(--nn-ink); }
+    /* Lucide "check", tinted with the accent via a mask so the pseudo-element can
+       still be a pure CSS marker (no extra DOM node in the task line). */
     .nn-task-done::before {
-      content: "✓"; width: auto; height: auto; background: none; box-shadow: none;
-      color: var(--nn-accent); font-weight: 700; font-size: 12px; transform: none;
+      content: ""; width: 13px; height: 13px; border-radius: 0; box-shadow: none;
+      background: var(--nn-accent); transform: translateY(2px);
+      -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E") center/contain no-repeat;
+      mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='3.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M20 6 9 17l-5-5'/%3E%3C/svg%3E") center/contain no-repeat;
     }
     .nn-task-stuck::before {
       content: "•"; width: auto; height: auto; background: none; box-shadow: none;
@@ -2569,14 +2853,22 @@
       transition: transform .12s ease, background .12s ease, border-color .12s ease;
     }
     .nn-vcontrols button:hover { transform: translateY(-1px); background: rgba(255,255,255,.95); }
+    .nn-vcontrols button:disabled { opacity: .4; cursor: default; box-shadow: none; }
+    .nn-vcontrols button:disabled:hover { transform: none; background: var(--nn-glass-strong); }
     /* these need the parent in the selector: ".nn-vcontrols button" is more
-       specific than a lone class, so a bare .nn-vend loses and renders white */
+       specific than a lone class, so a bare .nn-vend loses and renders white.
+       Each coloured button must also restate its own background on :hover, or the
+       generic hover above paints it white (that rule sets background too). */
     .nn-vcontrols .nn-vkeyboard { font-size: 15px; }
     .nn-vcontrols .nn-vmic-off { background: rgba(255,236,235,.9); border-color: rgba(240,180,176,.9); }
+    .nn-vcontrols .nn-vdone {
+      border-color: var(--nn-accent); color: var(--nn-accent); font-weight: 700; font-size: 17px;
+    }
+    .nn-vcontrols .nn-vdone:not(:disabled):hover { background: var(--nn-glass-strong); }
     .nn-vcontrols .nn-vend {
       background: var(--nn-sheen), var(--nn-accent); border-color: rgba(255,255,255,.45); color: #fff; font-size: 15px;
     }
-    .nn-vcontrols .nn-vend:hover { filter: brightness(1.08); }
+    .nn-vcontrols .nn-vend:hover { filter: brightness(1.08); background: var(--nn-sheen), var(--nn-accent); }
     /* the call is still up while the panel is minimised to watch the cursor */
     .nn-launcher-live { animation: nn-mic-pulse 1.9s ease-in-out infinite; }
 

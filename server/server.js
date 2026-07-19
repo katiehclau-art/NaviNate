@@ -27,7 +27,12 @@ if (!process.env.OPENAI_API_KEY) {
   console.warn("⚠️  OPENAI_API_KEY is not set. Copy server/.env.example to server/.env first.");
 }
 
-const openai = new OpenAI(); // reads OPENAI_API_KEY from the environment
+// timeout + maxRetries are load-bearing, not tuning: the SDK default is a 600s
+// (ten-minute!) timeout, so a stalled upstream request would leave /chat hanging
+// for minutes and the widget frozen on "Working…". Cap each attempt at 30s with a
+// single retry, so a step either answers promptly or fails fast enough for the
+// client to recover.
+const openai = new OpenAI({ timeout: 30000, maxRetries: 1 }); // reads OPENAI_API_KEY from the environment
 
 const app = express();
 app.use(cors()); // the widget calls us from the client's (Base44) origin
