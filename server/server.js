@@ -44,7 +44,7 @@ const DEFAULT_CONFIG = {
   aggressiveness: "autonomous", // "suggestive" | "autonomous" | "fully_autonomous"
   companyWebsiteUrl: "", // the client's site (used by the scraper to build their site map)
   welcomeMessage: "Hi! I can explore this site and click through it for you. What are you trying to do?",
-  launcherIcon: "🧭", // emoji shown on the launcher bubble + header
+  launcherIcon: "", // emoji shown on the launcher bubble + header; empty => widget's default NaviNate brand icon
   suggestedPrompts: [], // starter chips shown before the first message, e.g. ["Find an EU server"]
   widgetPosition: "bottom-right", // "bottom-right" | "bottom-left"
   maxAutoSteps: 8, // safety cap on autonomous steps per goal

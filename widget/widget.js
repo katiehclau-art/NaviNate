@@ -86,7 +86,7 @@
   let theme = {
     primaryColor: "#4f46e5",
     botName: "NaviNate Assistant",
-    launcherIcon: "🧭",
+    launcherIcon: "", // empty => render the default NaviNate brand icon (see iconMarkup); a client can override with an emoji via Base44
     welcomeMessage: "Hi! I can explore this site and click through it for you. What are you trying to do?",
     suggestedPrompts: [],
     widgetPosition: "bottom-right",
@@ -134,6 +134,14 @@
   };
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+  // The launcher/header icon: a client-configured emoji overrides it via Base44;
+  // otherwise fall back to the default NaviNate brand mark (served alongside the
+  // demo site, so it works from the same origin the widget was loaded from).
+  function iconMarkup(cls) {
+    if (theme.launcherIcon) return escapeHtml(theme.launcherIcon);
+    return `<img class="nn-icon-img ${cls}" src="${BACKEND}/assets/navinate-icon.png" alt="${escapeHtml(theme.botName)}" />`;
+  }
+
   // ---- build the UI --------------------------------------------------------
   let root, panel, log, input, sendBtn, launcher, cursor, cursorCaption, statusEl, suggestionsEl, undoBtn, micBtn;
   let voiceStage, captionEl, orbEl, vStateEl, vMicBtn;
@@ -155,16 +163,17 @@
     launcher = el("button", {
       className: "nn-launcher",
       title: "Ask " + theme.botName,
-      innerHTML: escapeHtml(theme.launcherIcon || "🧭"),
+      innerHTML: iconMarkup("nn-launcher-icon"),
     });
     launcher.onclick = toggle;
     root.appendChild(launcher);
+    setLauncherBusy(state.acting); // reflect an in-progress goal resumed after a page reload
 
     // Chat panel
     panel = el("div", { className: "nn-panel" });
     panel.innerHTML = `
       <div class="nn-header">
-        <span class="nn-title">${escapeHtml(theme.launcherIcon || "🧭")} ${escapeHtml(theme.botName)}</span>
+        <span class="nn-title">${iconMarkup("nn-header-icon")} ${escapeHtml(theme.botName)}</span>
         <div class="nn-header-actions">
           <button class="nn-reset" title="Reset chat" aria-label="Reset chat">↺</button>
           <button class="nn-min" title="Minimize" aria-label="Minimize">–</button>
@@ -366,13 +375,22 @@
     if (state.acting) return;
     state.acting = true;
     SS.setItem("navinate.acting", "1");
+    setLauncherBusy(true); // pulse the launcher — the only cue left once the panel is minimized
     if (state.open) closePanel(); // minimize; the cursor + caption keep the user informed
   }
   function exitActingMode() {
     if (!state.acting) return;
     state.acting = false;
     SS.removeItem("navinate.acting");
+    setLauncherBusy(false);
     openPanel(); // pop back out to show the reply
+  }
+
+  // Pulses the launcher logo (grow/shrink) so the user has SOME signal the agent
+  // is still working even if they've scrolled away from the fake cursor, it's
+  // off-screen, or they just glance at the corner where the chat lives.
+  function setLauncherBusy(v) {
+    if (launcher) launcher.classList.toggle("nn-launcher-busy", v);
   }
 
   // ---- chat rendering ------------------------------------------------------
@@ -1913,12 +1931,28 @@
 
     .nn-launcher {
       position: fixed; right: 22px; bottom: 22px; z-index: 2147483000;
-      width: 60px; height: 60px; border-radius: 50%; border: none; cursor: pointer;
-      background: var(--nn-accent); color: #fff; font-size: 26px; line-height: 1;
-      box-shadow: 0 8px 24px rgba(0,0,0,.25); transition: transform .15s ease;
+      width: 60px; height: 60px; border: none; cursor: pointer; padding: 0;
+      background: transparent; color: #fff; font-size: 26px; line-height: 1;
+      display: flex; align-items: center; justify-content: center;
+      transition: transform .15s ease;
     }
     .nn-launcher:hover { transform: scale(1.06); }
     .nn-hidden { display: none !important; }
+
+    .nn-icon-img { display: block; object-fit: contain; border-radius: 8px; }
+    /* fills the launcher footprint — no button chrome behind it, just the logo,
+       which already carries its own rounded-square background + shadow-friendly art */
+    .nn-launcher-icon { width: 60px; height: 60px; border-radius: 14px; filter: drop-shadow(0 8px 20px rgba(0,0,0,.3)); transition: transform .15s ease; }
+    .nn-header-icon { display: inline-block; width: 24px; height: 24px; border-radius: 7px; }
+
+    /* "still working" cue while the agent is acting and the panel is minimized —
+       the fake cursor is the primary signal, this is the backup for when it's
+       out of view: the launcher logo breathes instead of sitting static. */
+    .nn-launcher-busy .nn-launcher-icon { animation: nn-icon-pulse 1.1s ease-in-out infinite; }
+    @keyframes nn-icon-pulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.18); }
+    }
 
     /* bottom-left placement when the client configures widget_position */
     #navinate-root.nn-left .nn-launcher,
@@ -1937,7 +1971,7 @@
       background: var(--nn-accent); color: #fff; padding: 14px 16px;
       display: flex; align-items: center; justify-content: space-between;
     }
-    .nn-title { font-weight: 600; font-size: 15px; }
+    .nn-title { font-weight: 600; font-size: 15px; display: flex; align-items: center; gap: 7px; }
     .nn-header-actions { display: flex; align-items: center; gap: 2px; }
     .nn-min, .nn-reset { background: transparent; border: none; color: #fff; cursor: pointer; line-height: 1; padding: 0 6px; border-radius: 6px; }
     .nn-min { font-size: 24px; }
