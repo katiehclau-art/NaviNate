@@ -1,3 +1,6 @@
 node_modules/
 .env
 *.log
+
+# provisioned ElevenLabs agent ids — per-deployment, not source
+voice-agents.json

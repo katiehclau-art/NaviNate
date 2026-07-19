@@ -54,6 +54,10 @@
     undoDraft: JSON.parse(SS.getItem("navinate.undoDraft") || "null"),
     lastUndo: JSON.parse(SS.getItem("navinate.lastUndo") || "null"),
     activeGoal: SS.getItem("navinate.activeGoal") || "",
+    // How the current goal was given: "voice" or "text". Persisted because a goal
+    // that spans a navigation finishes on the next page, which still needs to know
+    // whether the visitor is listening or reading.
+    goalVia: SS.getItem("navinate.goalVia") || "",
   };
   let MAX_AUTO_STEPS = 8; // safety cap on agent-driven steps per goal (overridable via config)
   const RECENT_SIGS_MAX = 5; // how many past actions the loop guard remembers
@@ -72,6 +76,9 @@
     state.activeGoal
       ? SS.setItem("navinate.activeGoal", state.activeGoal)
       : SS.removeItem("navinate.activeGoal");
+    state.goalVia
+      ? SS.setItem("navinate.goalVia", state.goalVia)
+      : SS.removeItem("navinate.goalVia");
   }
 
   // Client-configurable theme/behavior (fetched from the backend /config, which
@@ -85,6 +92,9 @@
     widgetPosition: "bottom-right",
     maxAutoSteps: 8,
     enabled: true,
+    // Flipped on by /config only when the backend actually holds an ElevenLabs
+    // key, so we never show a mic button that can't work.
+    voiceEnabled: false,
   };
 
   // ---- analytics identity + reporter --------------------------------------
@@ -133,7 +143,9 @@
   }
 
   // ---- build the UI --------------------------------------------------------
-  let root, panel, log, input, sendBtn, launcher, cursor, cursorCaption, statusEl, suggestionsEl, undoBtn;
+  let root, panel, log, input, sendBtn, launcher, cursor, cursorCaption, statusEl, suggestionsEl, undoBtn, micBtn;
+  let voiceStage, captionEl, orbEl, vStateEl, vMicBtn;
+  let voice = null; // the ElevenLabs voice controller, lazy-loaded on first use
 
   function buildUI() {
     root = el("div", { id: "navinate-root" });
@@ -172,6 +184,7 @@
       <div class="nn-undo-row"><button class="nn-undo" type="button">↶ Undo last command</button></div>
       <div class="nn-suggestions"></div>
       <div class="nn-inputbar">
+        <button class="nn-mic" title="Talk to me" aria-label="Start a voice conversation">🎙</button>
         <input class="nn-input" type="text" placeholder="Ask me to find or do something…" />
         <button class="nn-send">➤</button>
       </div>`;
@@ -183,6 +196,10 @@
     statusEl = panel.querySelector(".nn-status");
     undoBtn = panel.querySelector(".nn-undo");
     suggestionsEl = panel.querySelector(".nn-suggestions");
+    micBtn = panel.querySelector(".nn-mic");
+    micBtn.onclick = toggleVoice;
+    if (!theme.voiceEnabled) micBtn.style.display = "none";
+
     panel.querySelector(".nn-min").onclick = closePanel;
     undoBtn.onclick = undoLastCommand;
     panel.querySelector(".nn-reset").onclick = resetChat;
@@ -191,6 +208,36 @@
     input.addEventListener("keydown", (e) => {
       if (e.key === "Enter") submit();
     });
+
+    // Voice stage. It lives on the ROOT, not inside the panel: during a call it
+    // floats over the site at the bottom of the screen with no chrome around it,
+    // so the visitor can still see (and the agent can still drive) the page they
+    // came for. The panel steps aside entirely while it's up.
+    voiceStage = el("div", { className: "nn-voice" });
+    voiceStage.innerHTML = `
+      <div class="nn-vcaption"></div>
+      <div class="nn-orb">
+        <span class="nn-orb-halo"></span>
+        <span class="nn-orb-ring"></span>
+        <span class="nn-orb-core"></span>
+      </div>
+      <div class="nn-vstate"></div>
+      <div class="nn-vcontrols">
+        <button class="nn-vkeyboard" title="Switch to typing" aria-label="Switch to typing">⌨</button>
+        <button class="nn-vmic" title="Mute microphone" aria-label="Mute microphone">🎙</button>
+        <button class="nn-vend" title="End voice chat" aria-label="End voice chat">✕</button>
+      </div>`;
+    root.appendChild(voiceStage);
+
+    captionEl = voiceStage.querySelector(".nn-vcaption");
+    orbEl = voiceStage.querySelector(".nn-orb");
+    vStateEl = voiceStage.querySelector(".nn-vstate");
+    vMicBtn = voiceStage.querySelector(".nn-vmic");
+    vMicBtn.onclick = toggleMute;
+    voiceStage.querySelector(".nn-vend").onclick = () => voice && voice.stop();
+    // Hand back to the keyboard without hanging up — the call keeps running and
+    // the mic button in the input bar brings the stage back.
+    voiceStage.querySelector(".nn-vkeyboard").onclick = () => setVoiceUI(false);
 
     // Fake cursor
     cursor = el("div", { className: "nn-cursor" });
@@ -214,7 +261,29 @@
       state.history = []; // drop any stale stored greeting from an earlier load/version
       persist();
     }
-    for (const m of state.history) addBubble(m.role, m.content, false);
+    // Replay the conversation exactly as it looked live.
+    //
+    // `content` is what the MODEL sees and is often not fit for display: action
+    // notes ("Navigated to https://…") and system nudges ("(System: you already
+    // did that)") are memory, not conversation. So an entry may carry `label` —
+    // the text the visitor actually saw — and `kind` — how it was drawn. An entry
+    // whose `label` is present but empty was never on screen at all, and must
+    // stay off screen after a reload too.
+    for (const m of state.history) {
+      const text = "label" in m ? m.label : m.content;
+      if (!text) continue;
+      const bubble = addBubble(m.kind || m.role, text, false);
+      if (m.kind !== "task") continue;
+      if (m.state === "done") bubble.classList.add("nn-task-done");
+      else if (m.state === "stuck") bubble.classList.add("nn-task-stuck");
+      else {
+        // Still in flight — the agent navigated mid-goal and is about to resume
+        // on this page. Re-adopt it so it gets settled when the goal finishes.
+        bubble.classList.add("nn-task-live");
+        taskChip = bubble;
+        taskEntry = m;
+      }
+    }
     if (!conversationStarted && theme.welcomeMessage) {
       addBubble("assistant", theme.welcomeMessage); // ephemeral — not pushed to history
     }
@@ -283,6 +352,9 @@
     state.undoDraft = null;
     state.lastUndo = null;
     state.activeGoal = "";
+    state.goalVia = "";
+    taskChip = taskEntry = null; // the task line is about to be wiped with the log
+    pendingVoiceFeedback = false;
     exitActingMode();
     disarmContinuation();
     ["autoSteps", "recentSigs", "continue", "navNotice", "acting", "history"].forEach((k) =>
@@ -410,9 +482,22 @@
     html = html.replace(/C(\d+)C/g, (_, i) => `<code>${escapeHtml(spans[+i])}</code>`);
     return html || "";
   }
+  // Is this the same thing the assistant just said? Used to keep the spoken and
+  // typed channels from double-rendering the same line.
+  function isDuplicateOfLastBubble(text) {
+    const bubbles = log.querySelectorAll(".nn-assistant");
+    const last = bubbles[bubbles.length - 1];
+    if (!last) return false;
+    const norm = (s) => String(s || "").replace(/\s+/g, " ").trim().toLowerCase();
+    return norm(last.textContent) === norm(text);
+  }
+
   function setStatus(text) {
     statusEl.textContent = text || "";
     statusEl.style.display = text ? "block" : "none";
+    // The status strip is hidden behind the voice stage, so mirror the agent's
+    // live "what I'm clicking" line onto the stage instead of losing it.
+    if (voiceUIOn && vStateEl && text) vStateEl.textContent = text;
   }
 
   // ---- DOM scanning --------------------------------------------------------
@@ -569,12 +654,37 @@
     const text = (input.value || "").trim();
     if (!text || busy) return;
     input.value = "";
-    addBubble("user", text);
-    state.history.push({ role: "user", content: text });
+    return runGoal(text);
+  }
+
+  // Start a fresh goal and drive it to completion. `submit()` is the typed entry
+  // point; the voice agent's navigate_site tool is the spoken one — both land
+  // here so there's exactly one definition of "what NaviNate does with a goal".
+  // Resolves with { navigated, summary, stuck, steps } so the caller (and the
+  // voice agent, which has no eyes) can report what actually happened.
+  async function runGoal(text, opts = {}) {
+    if (!text || busy) return { navigated: false, summary: "I'm already working on something — one moment.", stuck: true };
+    // A spoken goal was already logged as the visitor's own transcript line, so
+    // we show what the agent is doing about it as a task line, rather than a
+    // second user bubble that looks like they said the same thing twice.
+    // `kind`/`label` ride along in history so a page reload redraws this exactly
+    // as it appeared live (see the restore loop in buildUI).
+    const entry = { role: "user", content: text };
+    if (opts.via === "voice") {
+      entry.kind = "task";
+      entry.label = taskLabel(text);
+      taskEntry = entry;
+      taskChip = addBubble("task", entry.label);
+      taskChip.classList.add("nn-task-live");
+    } else {
+      addBubble("user", text);
+    }
+    state.history.push(entry);
     state.autoSteps = 0; // new user goal resets the step budget
     state.recentSigs = []; // ...and the loop guard, so a fresh goal may repeat a prior action
     state.repeatStrikes = 0;
     state.activeGoal = text;
+    state.goalVia = opts.via === "voice" ? "voice" : "text";
     state.lastUndo = null;
     state.undoDraft = {
       command: text,
@@ -588,19 +698,41 @@
     renderUndo();
     renderSuggestions(); // hide the starter chips now that they're chatting
     // The message text lets the dashboard surface common questions/issues.
-    track("message_sent", { message: text });
-    await runTurn(text);
+    // Spoken goals are already counted from the visitor's transcript, so don't
+    // count the agent's restatement of one a second time.
+    if (opts.via !== "voice") track("message_sent", { message: text });
+    return runTurn(text);
   }
 
   // Drives the agent loop: ask the backend → perform the action → re-scan → repeat,
   // until the goal is done, the model stops acting, it repeats itself, or we hit the
   // step cap. Continues across page navigations via sessionStorage (see boot()).
   async function runTurn(userMessage) {
-    if (busy) return;
+    if (busy) return { navigated: false, summary: "", stuck: true, steps: 0 };
     busy = true;
     const activeGoal = userMessage || state.activeGoal;
     let msg = userMessage || continueGoalMessage(activeGoal);
     let stuck = false; // did the goal end by giving up / hitting the cap? (an "issue")
+    // Everything the agent said or did this goal, so a caller with no screen
+    // (the voice agent) can be told what happened rather than guessing.
+    const notes = [];
+
+    // During a spoken goal the visitor is LISTENING to the voice agent, and these
+    // replies are the page-driving agent's internal narration — they get handed
+    // over as the tool result and the voice agent says its own version. Rendering
+    // them too puts the same answer on screen twice, in two different wordings.
+    // They still go into history as model memory, with an empty `label` so a
+    // reload doesn't resurrect them either.
+    const viaVoice = state.goalVia === "voice";
+    const showReply = (text) => {
+      if (text && !viaVoice) addBubble("assistant", text);
+    };
+    const replyEntry = (content, displayed) => ({
+      role: "assistant",
+      content,
+      label: viaVoice ? "" : displayed === undefined ? content : displayed,
+    });
+
     try {
       for (;;) {
         setStatus(state.autoSteps === 0 ? "Thinking…" : "Working…");
@@ -618,7 +750,10 @@
           }),
         });
         const data = await res.json();
-        if (data.reply) addBubble("assistant", data.reply);
+        if (data.reply) {
+          showReply(data.reply);
+          notes.push(data.reply);
+        }
 
         // ONE deliberate step per turn: perform only the FIRST requested action,
         // then re-scan and let the model decide again. This is the real fix for
@@ -627,7 +762,7 @@
         const action = (data.actions || [])[0];
 
         if (!action) {
-          if (data.reply) state.history.push({ role: "assistant", content: data.reply });
+          if (data.reply) state.history.push(replyEntry(data.reply));
           persist();
           break; // model answered in text / finished — nothing to do
         }
@@ -638,9 +773,10 @@
         const sig = [action.action, action.target_id || "", action.value || "", action.url || ""].join("|");
         if (state.recentSigs.includes(sig)) {
           state.repeatStrikes++;
-          if (data.reply) state.history.push({ role: "assistant", content: data.reply });
+          if (data.reply) state.history.push(replyEntry(data.reply));
           state.history.push({
             role: "user",
+            label: "", // a nudge to the model; the visitor never saw it
             content:
               "(System: you already performed that exact step, so I did not repeat it — it's done. " +
               "Check the current pageText and pageElements (note any element with active:true is already selected) " +
@@ -649,14 +785,18 @@
           });
           persist();
           if (state.repeatStrikes >= MAX_REPEAT_STRIKES) {
-            addBubble("assistant", "I seem to be stuck — could you rephrase or point me in the right direction?");
+            const note = "I seem to be stuck — could you rephrase or point me in the right direction?";
+            showReply(note);
+            notes.push(note);
             stuck = true;
             break;
           }
           state.autoSteps++;
           persist();
           if (state.autoSteps >= MAX_AUTO_STEPS) {
-            addBubble("assistant", "I've taken several steps — let me know if you'd like me to keep going.");
+            const note = "I've taken several steps — let me know if you'd like me to keep going.";
+            showReply(note);
+            notes.push(note);
             stuck = true;
             break;
           }
@@ -669,29 +809,54 @@
         enterActingMode(); // minimize the window so the user can watch the page
         showCursorCaption(action.reason);
         const undoEntry = captureUndoEntry(action);
+        // Let the voice session stash the conversation before a click that might
+        // unload the page — after realClick() it may already be too late.
+        if (action.action === "navigate" && voice) voice.armHandoff();
         const r = await performAction(action);
         hideCursorCaption();
         if (r.executed) {
+          notes.push(describeAction(action, r.label));
           if (undoEntry && state.undoDraft) state.undoDraft.entries.push(undoEntry);
           state.recentSigs.push(sig);
           if (state.recentSigs.length > RECENT_SIGS_MAX) state.recentSigs.shift();
-          // Record what we did so the next turn's model remembers and won't redo it.
+          // Record what we did so the next turn's model remembers and won't redo
+          // it. Only the reply was ever spoken to the visitor — the action note
+          // is memory, so `label` keeps it out of the replayed log.
+          state.history.push(
+            replyEntry(
+              [data.reply, describeAction(action, r.label)].filter(Boolean).join("\n"),
+              data.reply || ""
+            )
+          );
+        } else if (r.failure) {
+          // The action was refused (e.g. a URL that doesn't exist). Tell the
+          // model exactly why, as a system turn, so it picks a real route instead
+          // of retrying the same dead end.
           state.history.push({
-            role: "assistant",
-            content: [data.reply, describeAction(action, r.label)].filter(Boolean).join("\n"),
+            role: "user",
+            label: "", // system feedback to the model, not a visitor turn
+            content: `(System: I did NOT perform that action. ${r.failure})`,
           });
+          notes.push(r.failure);
+          // Remember it as attempted so the loop guard blocks an exact retry,
+          // even though nothing actually happened on the page.
+          state.recentSigs.push(sig);
+          if (state.recentSigs.length > RECENT_SIGS_MAX) state.recentSigs.shift();
         } else if (data.reply) {
-          state.history.push({ role: "assistant", content: data.reply });
+          state.history.push(replyEntry(data.reply));
         }
         persist();
 
-        if (r.navigated) return; // page is reloading; boot() resumes the loop
+        // Page is reloading; boot() resumes the loop on the other side.
+        if (r.navigated) return { navigated: true, summary: notes.join(" "), stuck: false, steps: state.autoSteps };
         if (data.done) break; // model doesn't intend to act further
 
         state.autoSteps++;
         persist();
         if (state.autoSteps >= MAX_AUTO_STEPS) {
-          addBubble("assistant", "I've taken several steps — let me know if you'd like me to keep going.");
+          const note = "I've taken several steps — let me know if you'd like me to keep going.";
+          showReply(note);
+          notes.push(note);
           stuck = true;
           break;
         }
@@ -708,19 +873,78 @@
       else track("goal_completed", { steps: state.autoSteps });
       state.activeGoal = "";
       finishUndoCommand();
-      attachFeedback(); // let the visitor rate the answer (CSAT)
+      // Rate the answer (CSAT). On a spoken goal the answer the visitor actually
+      // gets is the voice agent's, which arrives a moment later — attaching now
+      // would pin the thumbs to a mid-action line, so hand it to the transcript.
+      if (viaVoice) pendingVoiceFeedback = true;
+      else attachFeedback();
+      // Whatever just happened on screen, tell the voice agent about it — it's
+      // holding a conversation about a page it can't see.
+      if (voice && voice.isActive()) voice.sendContext(describePageForVoice(), "page");
+      finishTaskChip(stuck);
+      return { navigated: false, summary: notes.join(" "), stuck, steps: state.autoSteps };
     } catch (err) {
       console.error("[NaviNate]", err);
       hideCursorCaption(0);
       exitActingMode();
-      addBubble("assistant", "Hmm, I couldn't reach my brain just now. Mind trying again?");
+      const note = "Hmm, I couldn't reach my brain just now. Mind trying again?";
+      showReply(note);
       setStatus("");
       state.activeGoal = "";
       finishUndoCommand();
+      finishTaskChip(true);
+      return { navigated: false, summary: note, stuck: true, steps: state.autoSteps };
     } finally {
       busy = false;
       renderUndo();
     }
+  }
+
+  // ---- the task line shown for a spoken goal -------------------------------
+  // A spoken goal arrives as an imperative ("open FAQ entry #1"). Shown verbatim
+  // it reads like a command the visitor is still waiting on, so we conjugate the
+  // leading verb: "Opening FAQ entry #1" while it works, "Opened FAQ entry #1"
+  // once it's done. Every occurrence of that verb is converted, so compound
+  // goals ("open #1 and open #2") don't end up half-tensed.
+  let taskChip = null; // the live <div> for the goal in flight
+  let taskEntry = null; // its history record, so a reload redraws it identically
+  let pendingVoiceFeedback = false; // 👍👎 owed to the next spoken reply
+
+  const TASK_VERBS = {
+    open: ["Opening", "Opened"], click: ["Clicking", "Clicked"], add: ["Adding", "Added"],
+    select: ["Selecting", "Selected"], choose: ["Choosing", "Chose"], pick: ["Picking", "Picked"],
+    go: ["Going", "Went"], navigate: ["Navigating", "Navigated"], show: ["Showing", "Showed"],
+    find: ["Finding", "Found"], set: ["Setting", "Set"], filter: ["Filtering", "Filtered"],
+    remove: ["Removing", "Removed"], apply: ["Applying", "Applied"], search: ["Searching", "Searched"],
+    scroll: ["Scrolling", "Scrolled"], type: ["Typing", "Typed"], compare: ["Comparing", "Compared"],
+    check: ["Checking", "Checked"], fill: ["Filling", "Filled"], submit: ["Submitting", "Submitted"],
+    sort: ["Sorting", "Sorted"], view: ["Viewing", "Viewed"], close: ["Closing", "Closed"],
+    expand: ["Expanding", "Expanded"], read: ["Reading", "Read"], get: ["Getting", "Got"],
+  };
+
+  function taskLabel(goal, done) {
+    const text = String(goal || "").trim().replace(/[.!\s]+$/, "");
+    if (!text) return "";
+    const verb = (/^\s*(?:please\s+|can you\s+|could you\s+)?([a-z]+)\b/i.exec(text) || [])[1];
+    const forms = verb && TASK_VERBS[verb.toLowerCase()];
+    let out = text;
+    if (forms) {
+      out = text.replace(new RegExp("\\b" + verb + "\\b", "gi"), done ? forms[1] : forms[0]);
+    }
+    return out.charAt(0).toUpperCase() + out.slice(1);
+  }
+
+  // Settle the task line once the goal is over: past tense, and a ✓ (or a ⚠ when
+  // the agent gave up) instead of the working dot.
+  function finishTaskChip(stuck) {
+    if (!taskChip || !taskEntry) return;
+    taskEntry.label = taskLabel(taskEntry.content, true);
+    taskEntry.state = stuck ? "stuck" : "done";
+    taskChip.textContent = taskEntry.label;
+    taskChip.classList.remove("nn-task-live");
+    taskChip.classList.add(stuck ? "nn-task-stuck" : "nn-task-done");
+    taskChip = taskEntry = null;
+    persist();
   }
 
   function continueGoalMessage(goal) {
@@ -778,8 +1002,10 @@
     renderUndo();
   }
 
+  // Returns a short note describing what was reversed (the voice agent speaks it).
   async function undoLastCommand() {
-    if (busy || !state.lastUndo) return;
+    if (busy) return "I'm in the middle of something — give me a second.";
+    if (!state.lastUndo) return "There's nothing to undo yet.";
     busy = true;
     renderUndo();
     const transaction = state.lastUndo;
@@ -792,8 +1018,9 @@
         if (transaction.appState != null) {
           SS.setItem("navinate.undoAppState", JSON.stringify(transaction.appState));
         }
+        if (voice) voice.armHandoff();
         window.location.href = transaction.startUrl;
-        return;
+        return `Taking them back to the previous page to undo "${transaction.command}".`;
       }
       restoreAppUndoState(transaction.appState);
       for (const entry of [...transaction.entries].reverse()) {
@@ -812,10 +1039,19 @@
           realClick(node);
         }
       }
-      addBubble("assistant", `Undid your last command: “${transaction.command}”`);
-      state.history.push({ role: "assistant", content: `Undid the previous command: ${transaction.command}` });
+      const shown = `Undid your last command: “${transaction.command}”`;
+      addBubble("assistant", shown);
+      // Phrased differently for the model than for the visitor, so pin the
+      // displayed wording or a reload would quietly reword it.
+      state.history.push({
+        role: "assistant",
+        content: `Undid the previous command: ${transaction.command}`,
+        label: shown,
+      });
       persist();
       track("command_undone", { message: transaction.command });
+      if (voice && voice.isActive()) voice.sendContext(describePageForVoice(), "page");
+      return `Undone — reversed "${transaction.command}".`;
     } finally {
       busy = false;
       renderUndo();
@@ -872,12 +1108,23 @@
       const b = el("button", { className: "nn-fb-btn", title: value, innerHTML: icon });
       b.onclick = () => {
         track("feedback", { value, message: answer.slice(0, 300) });
+        // The thanks message replaces the row, taking the play/pause button with
+        // it — don't leave audio running with nothing to stop it.
+        if (narration && row.contains(narration.btn)) stopNarration();
         row.innerHTML = '<span class="nn-fb-thanks">Thanks for the feedback!</span>';
       };
       return b;
     };
     row.appendChild(mk("👍", "up"));
     row.appendChild(mk("👎", "down"));
+    // Read-it-to-me. Pointless while a live conversation is running (the agent
+    // already said it), so only offer it on the text path.
+    if (theme.voiceEnabled && !(voice && voice.isActive())) {
+      const speakBtn = el("button", { className: "nn-fb-btn nn-fb-speak" });
+      setNarrationState(speakBtn, "idle");
+      speakBtn.onclick = () => narrate(answer, speakBtn);
+      row.appendChild(speakBtn);
+    }
     last.appendChild(row);
     log.scrollTop = log.scrollHeight;
   }
@@ -900,6 +1147,74 @@
   //   executed  — false when the target element wasn't found (nothing happened)
   const skip = { navigated: false, label: "", executed: false };
 
+  // Unloading the page kills the voice socket and every audio buffer queued in
+  // it, so a navigation fired while the agent is talking chops it off mid-word.
+  // Let it land the sentence first — the cursor has already moved, so the pause
+  // reads as deliberate rather than as lag.
+  async function letVoiceFinishSpeaking() {
+    if (!(voice && voice.isActive())) return;
+    await voice.waitUntilQuiet(6000);
+    // Re-stash the thread now that the last sentence is actually in it, so the
+    // reconnect on the next page resumes from a complete turn.
+    voice.armHandoff();
+  }
+
+  // Does this same-origin URL actually exist? Only an answer the server really
+  // gave us counts — a network hiccup must never look like a missing page.
+  async function urlIsMissing(href) {
+    try {
+      const res = await fetch(href, { method: "HEAD", redirect: "follow" });
+      return res.status === 404 || res.status === 410;
+    } catch (_) {
+      return false; // offline / blocked / CORS — not evidence of anything
+    }
+  }
+
+  // Work out where a requested navigation should actually go, or why it must not
+  // happen. Returns { url } to proceed, or { failure } to refuse and tell the model.
+  async function resolveDestination(href) {
+    let target;
+    try {
+      target = new URL(href, window.location.href);
+    } catch {
+      return { failure: `"${href}" is not a valid URL.` };
+    }
+
+    // The site map is built by a crawler that may have run against a different
+    // host than the visitor is on right now — www vs non-www, http vs https,
+    // staging vs production, a different dev port. Following it literally throws
+    // the visitor onto another origin, which silently drops the whole session:
+    // chat history, undo stack and the live voice conversation all live in
+    // per-origin storage. Prefer the equivalent page on the origin we're on.
+    if (target.origin !== window.location.origin) {
+      const local = new URL(target.pathname + target.search + target.hash, window.location.origin);
+      if (!(await urlIsMissing(local.href))) {
+        return { url: local.href };
+      }
+      return { url: target.href }; // genuinely somewhere else; go as asked
+    }
+
+    if (target.href.replace(/#.*$/, "") === window.location.href.replace(/#.*$/, "")) {
+      return { failure: "That is the page we're already on." };
+    }
+    if (await urlIsMissing(target.href)) {
+      return {
+        failure:
+          `${target.pathname} does not exist on this site (404). Do not retry it or guess a similar ` +
+          `path — use a link that is actually present in pageElements, or tell the user the page isn't available.`,
+      };
+    }
+    return { url: target.href };
+  }
+
+  // Does clicking this probably leave the page? We can't know for sure (any
+  // handler can redirect), but a plain link is the common case worth waiting on.
+  function likelyNavigates(node) {
+    if (!node || node.tagName !== "A") return false;
+    const href = node.getAttribute("href") || "";
+    return href && !href.startsWith("#") && !/^javascript:/i.test(href);
+  }
+
   async function performAction(action) {
     const { action: type, target_id, value, url, reason } = action;
     if (reason) setStatus(reason);
@@ -909,13 +1224,23 @@
       if (node) {
         const label = elementText(node);
         await moveCursorToNode(node);
+        await letVoiceFinishSpeaking();
         armContinuation(reason || `Navigating to ${label || "another page"}…`);
         node.click();
         return { navigated: true, label, executed: true };
       }
       if (url) {
+        // The model can hallucinate a plausible-looking path ("/faq") the site has
+        // never had, and the site map can point at a stale host. Resolve both
+        // before committing — landing the visitor on a 404, or on another origin
+        // that wipes the session, can't be recovered from by re-reading the page.
+        const dest = await resolveDestination(url);
+        if (dest.failure) {
+          return { navigated: false, label: url, executed: false, failure: dest.failure };
+        }
+        await letVoiceFinishSpeaking();
         armContinuation(reason || `Navigating to ${url}…`);
-        window.location.href = new URL(url, window.location.href).href; // handles relative paths
+        window.location.href = dest.url;
         return { navigated: true, label: url, executed: true };
       }
       return skip;
@@ -928,6 +1253,7 @@
     await moveCursorToNode(node);
 
     if (type === "click") {
+      if (likelyNavigates(node)) await letVoiceFinishSpeaking();
       await flashClick(node);
       // A click can navigate asynchronously — an <a href>, a form submit, or a JS
       // redirect. While the old document is still alive, window.location.href hasn't
@@ -1197,6 +1523,311 @@
     setTimeout(() => ring.remove(), ms);
   }
 
+  // ---- voice (ElevenLabs) --------------------------------------------------
+  // The mic turns NaviNate from "type a goal, watch the cursor" into a spoken
+  // conversation with something that can operate the page while you talk to it.
+  // widget/voice.js owns the audio and the socket; everything below is the bridge
+  // it needs into this file — the goal runner, the DOM, and the chat log.
+
+  let voiceLoading = null;
+  function loadVoiceModule() {
+    if (window.NaviNateVoice) return Promise.resolve(window.NaviNateVoice);
+    if (voiceLoading) return voiceLoading;
+    voiceLoading = new Promise((resolve, reject) => {
+      const s = el("script", { src: BACKEND + "/widget-voice.js", async: true });
+      s.onload = () => (window.NaviNateVoice ? resolve(window.NaviNateVoice) : reject(new Error("voice module did not register")));
+      s.onerror = () => reject(new Error("could not load the voice module"));
+      document.head.appendChild(s);
+    });
+    return voiceLoading;
+  }
+
+  // What the voice agent "sees". It has no DOM, so this is its only window onto
+  // the page the visitor is actually looking at.
+  function describePageForVoice() {
+    return `The visitor is on "${document.title}" (${location.href}). Visible content:\n${getPageText()}`;
+  }
+
+  async function ensureVoice() {
+    if (voice) return voice;
+    const mod = await loadVoiceModule();
+    voice = mod.create({
+      BACKEND,
+      CLIENT_ID,
+      track,
+      // The spoken entry point into the exact same agent loop the text box uses.
+      runGoal: (goal) => runGoal(goal, { via: "voice" }),
+      readPage: () => ({ url: location.href, title: document.title, text: getPageText() }),
+      undo: () => undoLastCommand(),
+      // Speech shows up in the chat log as it happens, so the visitor has a
+      // transcript to scroll back through and deaf/HoH users aren't shut out.
+      onTranscript: (role, text) => {
+        // The agent's first_message is the same welcome line the panel already
+        // painted on load, so it would land twice the moment voice connects.
+        // More generally, never repeat the bubble we just showed.
+        if (role === "assistant" && isDuplicateOfLastBubble(text)) return;
+        setCaption(role, text); // the stage shows the line being said right now
+        addBubble(role, text);
+        state.history.push({ role, content: text });
+        persist();
+        // This spoken reply is the answer to the goal that just finished, so it's
+        // the one worth rating.
+        if (role === "assistant" && pendingVoiceFeedback) {
+          pendingVoiceFeedback = false;
+          attachFeedback();
+        }
+        if (role === "user") {
+          renderSuggestions();
+          track("message_sent", { message: text });
+        }
+      },
+      onStatus: setVoiceStatus,
+      onError: (m) => {
+        addBubble("assistant", m);
+        setVoiceStatus("error");
+      },
+      onEnded: () => {
+        setVoiceStatus("idle");
+        setStatus("");
+      },
+    });
+    // The visitor can leave the page themselves mid-sentence (clicking a link,
+    // hitting back). Stash the thread on the way out so the reconnect on the next
+    // page doesn't start cold.
+    window.addEventListener("pagehide", () => {
+      if (voice && voice.isActive()) voice.armHandoff();
+    });
+    return voice;
+  }
+
+  // ---- voice mode UI -------------------------------------------------------
+  // While a call is live the keyboard is the wrong affordance, so the text bar
+  // and transcript give way to a stage: captions, a visualiser that breathes with
+  // whoever is talking, and the controls. The transcript keeps filling underneath
+  // and is one tap away via the keyboard button.
+  let voiceUIOn = false;
+  let orbRaf = 0;
+
+  // Voice mode and text mode are two views of the SAME live call — switching
+  // between them never starts or ends anything. Voice mode hides the panel and
+  // the launcher so only the floating stage is over the site; text mode brings
+  // the panel back with the transcript already filled in.
+  function setVoiceUI(on) {
+    if (!root || voiceUIOn === on) return;
+    voiceUIOn = on;
+    root.classList.toggle("nn-voice-open", on);
+    if (on) {
+      if (captionEl && !captionEl.textContent.trim()) {
+        setCaption("hint", "Just say what you're looking for.");
+      }
+      startOrb();
+    } else {
+      stopOrb();
+      // Coming back to typing: show the conversation that happened while talking.
+      if (voice && voice.isActive()) openPanel();
+      log && (log.scrollTop = log.scrollHeight);
+    }
+    updateMicButton();
+  }
+
+  // The input-bar mic is the way back INTO voice mode, so it has to read
+  // differently depending on whether a call is already up.
+  function updateMicButton() {
+    if (!micBtn) return;
+    const live = voice && voice.isActive();
+    micBtn.title = live ? "Back to voice mode" : "Talk to me";
+    micBtn.setAttribute("aria-label", micBtn.title);
+    micBtn.innerHTML = live ? "🔊" : "🎙";
+  }
+
+  function startOrb() {
+    cancelAnimationFrame(orbRaf);
+    const tick = () => {
+      if (!voiceUIOn || !orbEl) return;
+      const lv = voice && voice.isActive() ? voice.levels() : { out: 0, in: 0 };
+      // The two sides drive different parts so you can tell at a glance who has
+      // the floor: the halo is the agent's voice, the core is yours.
+      orbEl.style.setProperty("--nn-out", (1 + lv.out * 0.55).toFixed(3));
+      orbEl.style.setProperty("--nn-in", (1 + lv.in * 0.32).toFixed(3));
+      orbEl.style.setProperty("--nn-glow", (0.25 + lv.out * 0.6).toFixed(3));
+      orbEl.classList.toggle("nn-orb-quiet", lv.out < 0.02 && lv.in < 0.04);
+      orbRaf = requestAnimationFrame(tick);
+    };
+    orbRaf = requestAnimationFrame(tick);
+  }
+
+  function stopOrb() {
+    cancelAnimationFrame(orbRaf);
+    orbRaf = 0;
+  }
+
+  // Captions: just the line being said right now. Anything older belongs to the
+  // transcript, which is still there behind the stage.
+  function setCaption(role, text) {
+    if (!captionEl || !text) return;
+    captionEl.className = "nn-vcaption nn-vcaption-" + role;
+    captionEl.textContent = text;
+    // Re-trigger the entry animation on each new line.
+    captionEl.style.animation = "none";
+    void captionEl.offsetWidth;
+    captionEl.style.animation = "";
+  }
+
+  function toggleMute() {
+    if (!voice || !voice.isActive()) return;
+    const next = !voice.isMuted();
+    voice.mute(next);
+    vMicBtn.classList.toggle("nn-vmic-off", next);
+    vMicBtn.innerHTML = next ? "🔇" : "🎙";
+    vMicBtn.title = next ? "Unmute microphone" : "Mute microphone";
+    vMicBtn.setAttribute("aria-label", vMicBtn.title);
+    if (vStateEl) vStateEl.textContent = next ? "Muted" : VOICE_LABELS[voice.status()] || "";
+  }
+
+  const VOICE_LABELS = {
+    connecting: "Connecting…",
+    listening: "Listening — just talk",
+    speaking: "Speaking…",
+    working: "Working on the page…",
+    error: "Voice unavailable",
+    idle: "",
+  };
+
+  function setVoiceStatus(status) {
+    if (!micBtn) return;
+    const live = status !== "idle" && status !== "error";
+    micBtn.classList.toggle("nn-mic-live", live);
+    micBtn.classList.toggle("nn-mic-hot", status === "listening");
+    micBtn.classList.toggle("nn-mic-speaking", status === "speaking");
+    // Don't stomp on the agent's own "what I'm clicking" status while it drives.
+    if (!busy) setStatus(VOICE_LABELS[status] || "");
+
+    // Starting a call opens the stage; ending one always closes it. Switching
+    // views mid-call is the visitor's choice, so don't yank them back.
+    if (live && !voiceUIOn && status === "connecting") setVoiceUI(true);
+    if (!live) setVoiceUI(false);
+    updateMicButton();
+    if (vStateEl && !(voice && voice.isMuted())) vStateEl.textContent = VOICE_LABELS[status] || "";
+    if (orbEl) {
+      orbEl.classList.toggle("nn-orb-working", status === "working");
+      orbEl.classList.toggle("nn-orb-connecting", status === "connecting");
+    }
+    // While the agent drives the page the panel minimises so the visitor can watch
+    // the cursor — mark the launcher so it's obvious the call is still up.
+    if (launcher) launcher.classList.toggle("nn-launcher-live", live);
+  }
+
+  async function toggleVoice() {
+    // A call is already running and we're looking at the transcript — this is a
+    // view switch, not a hang-up. Ending is the ✕ on the stage.
+    if (voice && voice.isActive()) {
+      setVoiceUI(true);
+      return;
+    }
+    setVoiceStatus("connecting");
+    try {
+      const v = await ensureVoice();
+      await v.start();
+    } catch (err) {
+      console.warn("[NaviNate] voice failed:", err);
+      setVoiceStatus("error");
+      addBubble(
+        "assistant",
+        err && /permission|denied|NotAllowed/i.test(String(err.name || err.message))
+          ? "I need microphone access to talk — you can still type to me here."
+          : "I couldn't start the voice connection. Typing still works fine."
+      );
+    }
+  }
+
+  // Speak a single assistant message out loud (the 🔊 on each reply). This is the
+  // one-shot TTS path — no mic, no session — so visitors who prefer to read but
+  // want a line read back still get the good voice.
+  //
+  // The button is the whole transport: 🔊 → spinner while the audio is generated
+  // → ⏸ while playing → ▶ paused. Clicking during the spinner cancels the
+  // request, because waiting on speech you no longer want is worse than silence.
+  // Only one line is ever narrated at a time; starting another takes over.
+  let narration = null; // { btn, audio, url, controller }
+
+  function setNarrationState(btn, state) {
+    if (!btn) return;
+    btn.classList.remove("nn-fb-loading", "nn-fb-playing", "nn-fb-paused");
+    if (state !== "idle") btn.classList.add("nn-fb-" + state);
+    btn.innerHTML =
+      state === "loading" ? '<span class="nn-spin" aria-hidden="true"></span>' :
+      state === "playing" ? "⏸" :
+      state === "paused" ? "▶" : "🔊";
+    btn.title =
+      state === "loading" ? "Preparing audio — click to cancel" :
+      state === "playing" ? "Pause" :
+      state === "paused" ? "Resume" : "Read this aloud";
+    btn.setAttribute("aria-label", btn.title);
+  }
+
+  // Tear the current narration down completely and return its button to 🔊.
+  function stopNarration() {
+    if (!narration) return;
+    const { btn, audio, url, controller } = narration;
+    narration = null; // clear first: abort() and pause() fire handlers that check it
+    try { controller && controller.abort(); } catch (_) {}
+    if (audio) {
+      audio.pause();
+      audio.removeAttribute("src");
+    }
+    if (url) URL.revokeObjectURL(url);
+    setNarrationState(btn, "idle");
+  }
+
+  async function narrate(text, btn) {
+    // Clicking the button that owns the current narration is a transport control,
+    // not a new request.
+    if (narration && narration.btn === btn) {
+      const audio = narration.audio;
+      if (!audio) return stopNarration(); // still generating — cancel it
+      if (audio.paused) {
+        try { await audio.play(); } catch (_) { return stopNarration(); }
+        setNarrationState(btn, "playing");
+      } else {
+        audio.pause();
+        setNarrationState(btn, "paused");
+      }
+      return;
+    }
+
+    stopNarration(); // a different reply — take over
+    const controller = new AbortController();
+    narration = { btn, audio: null, url: null, controller };
+    setNarrationState(btn, "loading");
+    try {
+      const res = await fetch(BACKEND + "/voice/speak", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ clientId: CLIENT_ID, text }),
+        signal: controller.signal,
+      });
+      if (!res.ok) throw new Error("tts " + res.status);
+      const blob = await res.blob();
+      // Cancelled (or superseded) while the audio was downloading.
+      if (!narration || narration.btn !== btn) return;
+
+      const url = URL.createObjectURL(blob);
+      const audio = new Audio(url);
+      narration.audio = audio;
+      narration.url = url;
+      audio.onended = () => { if (narration && narration.audio === audio) stopNarration(); };
+      await audio.play();
+      setNarrationState(btn, "playing");
+      track("voice_narration");
+    } catch (err) {
+      if (err && err.name === "AbortError") return; // cancelled; already reset
+      console.warn("[NaviNate] narration failed:", err);
+      stopNarration();
+      setStatus("I couldn't play that audio just now.");
+      setTimeout(() => setStatus(""), 2600);
+    }
+  }
+
   // ---- boot ----------------------------------------------------------------
   async function loadTheme() {
     try {
@@ -1227,6 +1858,19 @@
       state.history.push({ role: "assistant", content: undoNotice });
       persist();
     }
+    // A voice conversation was running when the page changed (the agent navigated,
+    // or the visitor clicked a link themselves). The socket died with the old
+    // document, so reconnect and replay the thread — from the visitor's side it's
+    // one conversation that happened to walk across several pages.
+    if (theme.voiceEnabled && SS.getItem("navinate.voice.active") === "1") {
+      ensureVoice()
+        .then((v) => v.resume())
+        .catch((err) => {
+          console.warn("[NaviNate] could not resume voice:", err);
+          SS.removeItem("navinate.voice.active");
+        });
+    }
+
     // Count genuine page loads where the widget is present (the denominator for
     // adoption %). Skip agent-driven reloads so they don't inflate page views.
     if (!state.pendingContinue) track("widget_loaded");
@@ -1249,7 +1893,16 @@
         // continueGoalMessage() instead of resending the original command as a
         // fresh user message — otherwise the model has no signal it already acted
         // on this goal and re-clicks the same nav link that got it here.
-        runTurn("");
+        //
+        // The goal finishing here is the other half of a navigate_site call whose
+        // tool result died with the previous page's socket, so hand the outcome to
+        // the voice agent explicitly — otherwise it never gets a turn and stays
+        // silent for the rest of the conversation.
+        runTurn("").then((outcome) => {
+          if (outcome && !outcome.navigated && voice && voice.isActive()) {
+            voice.reportGoalResult(outcome.summary);
+          }
+        });
       }
     }
   }
@@ -1365,6 +2018,139 @@
     .nn-input:focus { border-color: var(--nn-accent); }
     .nn-send { border: none; background: var(--nn-accent); color: #fff; border-radius: 12px; width: 44px; font-size: 16px; cursor: pointer; }
 
+    /* voice: the mic sits left of the input and pulses while the line is open */
+    .nn-mic {
+      border: 1px solid #dcdce6; background: #fff; border-radius: 12px; width: 44px;
+      font-size: 16px; cursor: pointer; line-height: 1; flex: none;
+      transition: background .15s ease, border-color .15s ease, box-shadow .15s ease;
+    }
+    .nn-mic:hover { border-color: var(--nn-accent); background: #f5f7ff; }
+    .nn-mic-live { background: var(--nn-accent); border-color: var(--nn-accent); }
+    .nn-mic-hot { animation: nn-mic-pulse 1.9s ease-in-out infinite; }
+    .nn-mic-speaking { animation: nn-mic-talk .7s ease-in-out infinite; }
+    @keyframes nn-mic-pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(79,70,229,.45); }
+      50% { box-shadow: 0 0 0 7px rgba(79,70,229,0); }
+    }
+    @keyframes nn-mic-talk { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.09); } }
+
+    /* the goal the voice agent handed to the cursor agent — a quiet activity
+       line, not a message, so it reads as something the agent did rather than
+       something either party said */
+    .nn-task {
+      align-self: stretch; background: transparent; color: #6a7183; border: none;
+      font-size: 12.5px; font-weight: 500; max-width: 100%; padding: 2px 2px 2px 0;
+      display: flex; align-items: baseline; gap: 7px; white-space: normal;
+    }
+    .nn-task::before {
+      content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%;
+      background: var(--nn-accent); transform: translateY(-1px);
+    }
+    .nn-task-live::before { animation: nn-task-pulse 1.4s ease-in-out infinite; }
+    .nn-task-live { color: #55607a; }
+    .nn-task-done::before {
+      content: "✓"; width: auto; height: auto; background: none;
+      color: var(--nn-accent); font-weight: 700; font-size: 12px; transform: none;
+    }
+    .nn-task-stuck::before {
+      content: "•"; width: auto; height: auto; background: none;
+      color: #b9bfd0; font-weight: 700; transform: none;
+    }
+    .nn-task-stuck { color: #98a0b3; }
+    @keyframes nn-task-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
+
+    /* ---- voice mode: a bare stage floating over the site, bottom centre ----
+       No panel, no card, no backdrop — the visitor keeps the whole page. The
+       container ignores pointer events so only the controls themselves are
+       clickable; everything behind stays usable (and clickable by the agent). */
+    .nn-voice {
+      position: fixed; left: 50%; bottom: 20px; transform: translateX(-50%);
+      z-index: 2147483400; display: none; flex-direction: column; align-items: center;
+      gap: 7px; width: min(440px, calc(100vw - 28px)); pointer-events: none;
+    }
+    #navinate-root.nn-voice-open .nn-voice { display: flex; animation: nn-stage-in .22s ease; }
+    .nn-voice > * { pointer-events: auto; }
+    @keyframes nn-stage-in { from { opacity: 0; transform: translate(-50%, 10px); } }
+    /* while the stage is up the panel and launcher get out of the way entirely */
+    #navinate-root.nn-voice-open .nn-panel,
+    #navinate-root.nn-voice-open .nn-launcher { display: none !important; }
+
+    /* Captions carry their own contrast chip — they have to stay readable on top
+       of whatever the client's page looks like, which we can't predict. */
+    .nn-vcaption {
+      max-width: 100%; text-align: center; font-size: 14px; line-height: 1.45; color: #fff;
+      background: rgba(16,18,27,.76); backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px);
+      padding: 9px 14px; border-radius: 13px; box-shadow: 0 6px 22px rgba(0,0,0,.22);
+      animation: nn-cap-in .22s ease; max-height: 96px; overflow: hidden;
+    }
+    .nn-vcaption:empty { display: none; }
+    .nn-vcaption-user { color: #c9cede; font-style: italic; }
+    .nn-vcaption-hint { color: #b9bfd0; font-size: 13px; }
+    @keyframes nn-cap-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
+
+    .nn-orb { position: relative; width: 116px; height: 116px; }
+    .nn-orb span { position: absolute; top: 50%; left: 50%; border-radius: 50%; }
+    .nn-orb-halo {
+      width: 116px; height: 116px; filter: blur(3px);
+      background: radial-gradient(circle, var(--nn-accent) 0%, transparent 68%);
+      opacity: var(--nn-glow, .25); transform: translate(-50%, -50%) scale(var(--nn-out, 1));
+      transition: opacity .1s linear;
+    }
+    .nn-orb-ring {
+      width: 82px; height: 82px; border: 2px solid var(--nn-accent); opacity: .3;
+      transform: translate(-50%, -50%) scale(var(--nn-out, 1));
+    }
+    .nn-orb-core {
+      width: 60px; height: 60px; transform: translate(-50%, -50%) scale(var(--nn-in, 1));
+      background: radial-gradient(circle at 38% 32%, #fff 2%, var(--nn-accent) 62%);
+      box-shadow: 0 10px 26px rgba(0,0,0,.28), inset 0 -6px 13px rgba(0,0,0,.14);
+    }
+    /* nobody talking: a slow breath, so it reads as listening rather than frozen */
+    .nn-orb-quiet .nn-orb-core { animation: nn-breathe 3.6s ease-in-out infinite; }
+    @keyframes nn-breathe {
+      0%, 100% { transform: translate(-50%, -50%) scale(1); }
+      50% { transform: translate(-50%, -50%) scale(1.045); }
+    }
+    /* dedicated keyframes: the shared nn-spin animates transform to a bare
+       rotate(), which would drop the translate(-50%,-50%) and fling the ring
+       off centre. (No backticks in here — this CSS is a JS template literal.) */
+    .nn-orb-working .nn-orb-ring {
+      opacity: .85; border-color: rgba(0,0,0,.08); border-top-color: var(--nn-accent);
+      animation: nn-orb-spin 1s linear infinite;
+    }
+    @keyframes nn-orb-spin {
+      from { transform: translate(-50%, -50%) rotate(0deg); }
+      to { transform: translate(-50%, -50%) rotate(360deg); }
+    }
+    .nn-orb-connecting .nn-orb-core { animation: nn-breathe 1.1s ease-in-out infinite; }
+
+    /* also chipped, for the same reason as the captions */
+    .nn-vstate {
+      font-size: 11.5px; color: #fff; background: rgba(16,18,27,.6);
+      backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
+      padding: 3px 10px; border-radius: 9px; letter-spacing: .01em;
+    }
+    .nn-vstate:empty { display: none; }
+
+    .nn-vcontrols { display: flex; gap: 10px; align-items: center; }
+    .nn-vcontrols button {
+      width: 42px; height: 42px; border-radius: 50%; border: 1px solid rgba(0,0,0,.08); background: #fff;
+      font-size: 16px; line-height: 1; cursor: pointer; display: grid; place-items: center;
+      box-shadow: 0 5px 18px rgba(0,0,0,.22);
+      transition: transform .12s ease, background .12s ease, border-color .12s ease;
+    }
+    .nn-vcontrols button:hover { transform: translateY(-1px); border-color: var(--nn-accent); }
+    /* these need the parent in the selector: ".nn-vcontrols button" is more
+       specific than a lone class, so a bare .nn-vend loses and renders white */
+    .nn-vcontrols .nn-vkeyboard { font-size: 15px; }
+    .nn-vcontrols .nn-vmic-off { background: #fdeceb; border-color: #f0b4b0; }
+    .nn-vcontrols .nn-vend {
+      background: var(--nn-accent); border-color: var(--nn-accent); color: #fff; font-size: 15px;
+    }
+    .nn-vcontrols .nn-vend:hover { filter: brightness(1.08); }
+    /* the call is still up while the panel is minimised to watch the cursor */
+    .nn-launcher-live { animation: nn-mic-pulse 1.9s ease-in-out infinite; }
+
     /* suggested-prompt starter chips */
     .nn-suggestions { display: flex; flex-wrap: wrap; gap: 7px; padding: 0 12px 4px; background: #fff; }
     .nn-chip {
@@ -1382,6 +2168,19 @@
     }
     .nn-fb-btn:hover { border-color: var(--nn-accent); background: #f5f7ff; }
     .nn-fb-thanks { font-size: 12px; color: #6b6b7b; font-style: italic; }
+
+    /* read-aloud transport: 🔊 → spinner → ⏸ → ▶ all in one button, so a fixed
+       width keeps the row from twitching as the glyph changes */
+    .nn-fb-speak { min-width: 30px; text-align: center; padding: 2px 6px; }
+    .nn-fb-loading, .nn-fb-playing, .nn-fb-paused {
+      border-color: var(--nn-accent); background: #f5f7ff; color: var(--nn-accent);
+    }
+    .nn-spin {
+      display: inline-block; width: 11px; height: 11px; vertical-align: -1px;
+      border: 2px solid rgba(79,70,229,.25); border-top-color: var(--nn-accent);
+      border-radius: 50%; animation: nn-spin .6s linear infinite;
+    }
+    @keyframes nn-spin { to { transform: rotate(360deg); } }
 
     .nn-cursor {
       position: fixed; left: 0; top: 0; z-index: 2147483600; pointer-events: none;

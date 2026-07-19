@@ -4,6 +4,11 @@ An **agentic** chatbot widget for any website. It doesn't just answer questions 
 explores the site and **takes over the cursor to click, type, scroll, and navigate**
 on the visitor's behalf, so they don't have to fight a confusing UI.
 
+**Talk to it.** With an ElevenLabs key set, the widget grows a mic: the visitor says
+*"find me a hybrid server in the EU and put the cheapest one in my cart"* and watches
+the cursor do it while the agent narrates. Voice is optional and degrades cleanly —
+no key, no mic button. See [Voice](#voice-elevenlabs) below.
+
 B2B SaaS model: businesses configure their bot in a **Base44 dashboard** and paste one
 `<script>` tag onto their site.
 
@@ -15,7 +20,14 @@ B2B SaaS model: businesses configure their bot in a **Base44 dashboard** and pas
 │  /api/config    ─────┼──get──▶│  system prompt,       │◀─chat──┤  scans DOM, sends    │
 │  /api/analytics ◀────┼──post──┤  brand color, mode    │──acts─▶│  moves fake cursor,  │
 │                      │        │  OpenAI (gpt-4o)      │        │  clicks buttons      │
-└──────────────────────┘        └───────────────────────┘        └──────────────────────┘
+└──────────────────────┘        │  + /voice/session ────┼─signed─┤          ▲           │
+                                └───────────────────────┘  url   │          │ mic/speaker│
+                                                                 │          ▼           │
+                                          ┌──────────────────────┴──────────────────────┤
+                                          │  ElevenLabs Agent (wss, direct)             │
+                                          │  speech ⇄ speech, calls client tools:       │
+                                          │  navigate_site / read_page / undo           │
+                                          └─────────────────────────────────────────────┘
         (already built)              (this repo)                      (widget.js served
                                                                        by the backend)
 ```
@@ -25,7 +37,7 @@ B2B SaaS model: businesses configure their bot in a **Base44 dashboard** and pas
 | Folder | What it is |
 |--------|-----------|
 | `server/`  | The **agent brain**. Express + OpenAI SDK. `/chat` takes the user's message + a JSON snapshot of the page's clickable elements and returns actions. Pulls per-client config from Base44 and pushes analytics back. Also serves `widget.js` and a **multi-page demo site** (`server/public/` — Home, Cloud, Telecom, Storage, Solutions, Pricing, Configure, Support, Contact, Status, Cart) for testing the agent locally. |
-| `widget/`  | The **embeddable widget** (`widget.js`, vanilla JS). Injects a chat window, scans the DOM, and performs the agent's actions with an animated fake cursor. |
+| `widget/`  | The **embeddable widget** (`widget.js`, vanilla JS). Injects a chat window, scans the DOM, and performs the agent's actions with an animated fake cursor. `voice.js` is the ElevenLabs voice client, lazy-loaded on the first mic tap. |
 | `scraper/` | Optional Puppeteer crawler that builds `sitemap.json` — a knowledge base of the site's pages so the agent can jump straight to the right subpage. |
 
 The Base44 dashboard + demo site are built separately in Base44.
@@ -120,13 +132,125 @@ Returns the initial status; a crawl already running for that client isn't duplic
   "pages": 12,                     // live count as it crawls
   "url": "https://acme.com",
   "startedAt": "…", "finishedAt": null, "error": null,
-  "sitemap": { "exists": true, "pages": 16, "updatedAt": "…" }  // the saved map
+  "found": [                       // fills in live, one entry per page crawled
+    { "url": "https://acme.com/", "description": "Acme home — …", "error": null }
+  ],
+  "sitemap": {                     // the saved map the agent actually uses
+    "exists": true, "pages": 16, "updatedAt": "…",
+    "urls": [ { "url": "https://acme.com/pricing", "description": "Pricing — …" } ]
+  }
 }
 ```
+
+`found` is the live feed (append-only while `state` is `running`, and it can
+include a page that errored). `sitemap.urls` is the authoritative result — the
+exact set of pages injected into the agent's system prompt, so showing it to the
+client tells them precisely which pages their assistant can reach. Once the crawl
+finishes, `found` is replaced by that same list. Descriptions are capped at 300
+characters.
 The crawl runs in the backend process (single job per client). `SCRAPE_MAX_PAGES` /
 `SCRAPE_MAX_DEPTH` env vars tune the limits (default 40 / 3). Requires the scraper's
 deps to be installed (`cd scraper && npm install`) — Puppeteer is imported lazily, so
 the server still boots without them and only errors when a scrape is triggered.
+
+---
+
+## Voice (ElevenLabs)
+
+Add one line to `server/.env` and the widget grows a microphone:
+
+```bash
+ELEVENLABS_API_KEY=sk_...
+```
+
+That's the whole setup. On the first `/voice/session` the backend **provisions an
+ElevenLabs agent for that client automatically** — persona built from their Base44
+config, client tools registered, overrides enabled — and caches the id in
+`server/voice-agents.json`. Edit `system_prompt` or `bot_name` in Base44 and the next
+session patches the same agent. Pin `ELEVENLABS_AGENT_ID` instead if you'd rather
+build the agent by hand in the ElevenLabs dashboard.
+
+### Why it's not just text-to-speech
+
+The voice agent has **hands**. NaviNate's page-driving loop is exposed to it as
+ElevenLabs **client tools**, so it can act, look, and reverse — not just talk:
+
+| Client tool | What the widget does with it |
+|---|---|
+| `navigate_site(goal)` | Hands the spoken goal to the existing GPT-4o cursor loop. Real cursor, real clicks, multi-step, across pages. Returns a summary of what actually happened. |
+| `read_page(question)` | Live snapshot of the visible page, so the agent answers from what's on screen instead of hallucinating a price. |
+| `undo_last_action()` | Rewinds the last command — page, scroll, field values, selections. Fires the moment someone says "no, go back". |
+
+So two brains, one visitor: **ElevenLabs runs the conversation** (turn-taking,
+barge-in, clarifying questions, emotion) while **NaviNate runs the browser**. The
+voice agent announces what it's about to do, the cursor does it, and the agent
+reports back — all while the visitor can interrupt at any point.
+
+### The parts that were actually hard
+
+- **Conversation survives navigation.** The WebSocket dies with the document every
+  time the agent opens a new page. Before any navigation the widget stashes the last
+  turns in `sessionStorage`, then reconnects on the next page with `first_message`
+  blanked and the thread replayed as a `contextual_update`. To the visitor it's one
+  conversation that walked across five pages.
+- **The agent can see the page it's standing on.** After every action and every
+  navigation the widget pushes the visible page text as a `contextual_update`, so the
+  agent never answers about the page the visitor already left.
+- **Barge-in is instant.** On the `interruption` event every queued audio buffer is
+  killed immediately rather than left to drain — talking over it actually works.
+- **Mic capture runs off the main thread** (AudioWorklet, with a ScriptProcessor
+  fallback for strict-CSP sites), because the agent is mutating the DOM *while* the
+  visitor is talking and a main-thread processor drops frames on every re-layout.
+
+### Endpoints
+
+| Route | Purpose |
+|---|---|
+| `GET /voice/status` | Is voice configured on this server? |
+| `GET /voice/session?clientId=` | Provisions/patches the agent and mints a short-lived signed `wss://` URL. **The API key never reaches the browser** — audio goes browser↔ElevenLabs directly, no relay hop. |
+| `POST /voice/provision` | Force a re-provision after a persona edit. |
+| `POST /voice/speak` | One-shot streaming TTS — powers the 🔊 on each reply for people who'd rather read but want a line read back. |
+
+### Extra Base44 config fields
+
+| Field | Effect |
+|-------|--------|
+| `voice_id` | ElevenLabs voice for this client (defaults to `ELEVENLABS_VOICE_ID`). |
+| `voice_enabled` | `false` hides the mic for this client without touching the server. |
+
+Tuning knobs — `ELEVENLABS_VOICE_ID`, `ELEVENLABS_TTS_MODEL` (default
+`eleven_flash_v2_5`, the lowest time-to-first-audio), `ELEVENLABS_LANGUAGE`,
+`ELEVENLABS_AGENT_LLM` — are all documented in `.env.example`.
+
+> The `_v2_5` TTS models are the multilingual ones and an English-locked agent
+> rejects them (*"English Agents must use turbo or flash v2"*). When
+> `ELEVENLABS_LANGUAGE=en` the backend automatically uses the English-only
+> `eleven_flash_v2` for the agent; one-shot TTS is unaffected.
+
+### The voice stage
+
+Starting a call hides the chat panel and floats a bare stage over the site at the
+bottom of the screen — captions, a visualiser driven by live audio (the halo is the
+agent's voice, the core is the visitor's), and three controls: **⌨** switch to
+typing, **🎙** mute, **✕** hang up. No card, no backdrop, and the container ignores
+pointer events, so the whole page stays visible and clickable — by the visitor and
+by the agent's cursor.
+
+Voice mode and text mode are two views of the same live call. **⌨** returns to the
+transcript and keyboard without hanging up; the mic button in the input bar (accent
+filled while a call is up) goes back to the stage. Only **✕** ends the call.
+
+### Demo tips
+
+- Voice + cursor together is the moment that lands: **say** the goal, then stop
+  talking and let people watch the page drive itself. The stage stays up while the
+  cursor works, so nothing is hidden behind a chat window.
+- Interrupt it mid-sentence on purpose. It stops instantly, and that sells "live"
+  better than any feature list.
+- Then say *"no, undo that"* — watching a website take something back because you
+  asked out loud is the second-best moment.
+- Mic access needs **HTTPS** (or `localhost`). Use the ngrok URL when demoing, not
+  a LAN IP.
 
 ---
 
@@ -183,6 +307,12 @@ it), `event`, `ts`, and — for widget events — `session_id`, `visitor_id`, an
 | `feedback` | Visitor clicks 👍/👎 on an answer | `value` (`up`/`down`), `message` | **CSAT** |
 | `error` | Backend/LLM failure during `/chat` | `reason` | Reliability |
 | `chat_reply` | Agent answered in text with no action | — | Q&A volume |
+| `voice_started` / `voice_ended` | Visitor opened/closed a voice conversation | — | **Voice adoption** |
+| `voice_resumed` | Voice reconnected after the agent changed pages | — | Continuity health |
+| `voice_session_started` | Backend minted a signed URL | — | Voice cost/usage |
+| `voice_narration` | Visitor tapped 🔊 on a reply | — | Read-aloud demand |
+| `scrape_completed` | A site crawl finished | `pages`, `url`, `urls` (array) | **Pages the agent knows** — store and render the list |
+| `scrape_failed` | A crawl errored out | `reason`, `url` | Crawl reliability |
 
 Suggested dashboard cards: **Adoption %** (`widget_opened` sessions ÷ `widget_loaded`
 sessions), **Actions Automated** & **Time Saved** (sum `action_taken`), **Resolution
