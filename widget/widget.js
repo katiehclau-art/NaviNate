@@ -211,7 +211,7 @@
       <div class="nn-suggestions"></div>
       <div class="nn-inputbar">
         <button class="nn-mic" title="Talk to me" aria-label="Start a voice conversation">🎙</button>
-        <input class="nn-input" type="text" placeholder="Ask me to find or do something…" />
+        <textarea class="nn-input" placeholder="Ask me to find or do something…" rows="1"></textarea>
         <button class="nn-send">➤</button>
       </div>`;
     root.appendChild(panel);
@@ -232,8 +232,13 @@
 
     sendBtn.onclick = () => submit();
     input.addEventListener("keydown", (e) => {
-      if (e.key === "Enter") submit();
+      // Enter sends; Shift+Enter inserts a newline like every other chat box.
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        submit();
+      }
     });
+    input.addEventListener("input", () => autoGrowInput());
 
     // Voice stage. It lives on the ROOT, not inside the panel: during a call it
     // floats over the site at the bottom of the screen with no chrome around it,
@@ -736,7 +741,16 @@
     const text = (input.value || "").trim();
     if (!text || busy) return;
     input.value = "";
+    autoGrowInput(); // shrink back to one line now that it's empty
     return runGoal(text);
+  }
+
+  // Grows the textarea to fit what's typed (wrapping downward instead of
+  // scrolling sideways) up to a cap, beyond which it scrolls internally.
+  function autoGrowInput() {
+    input.style.height = "auto";
+    if (input.scrollHeight <= 0) { input.style.height = ""; return; } // hidden (e.g. panel closed) — keep the CSS default
+    input.style.height = Math.min(input.scrollHeight, 120) + "px";
   }
 
   // Start a fresh goal and drive it to completion. `submit()` is the typed entry
@@ -1463,10 +1477,6 @@
     return window.location.href.replace(/#.*$/, "") !== fromUrl.replace(/#.*$/, "");
   }
 
-  function sameDocumentNavigation(fromUrl, unloadFired) {
-    return !unloadFired && window.location.href.replace(/#.*$/, "") !== fromUrl.replace(/#.*$/, "");
-  }
-
   async function performAction(action) {
     const { action: type, target_id, value, url, reason } = action;
     if (reason) setStatus(reason);
@@ -1495,10 +1505,6 @@
         window.removeEventListener("pagehide", onLeave);
         window.removeEventListener("beforeunload", onLeave);
         if (leftThePage(before, leaving)) {
-          if (sameDocumentNavigation(before, leaving)) {
-            disarmContinuation();
-            return { navigated: false, label, executed: true };
-          }
           return { navigated: true, label, executed: true };
         }
         // Didn't move. Follow the element's href directly if it has one;
@@ -1564,10 +1570,6 @@
       window.removeEventListener("pagehide", onLeave);
       window.removeEventListener("beforeunload", onLeave);
       const navigated = leftThePage(before, leaving);
-      if (sameDocumentNavigation(before, leaving)) {
-        disarmContinuation();
-        return { navigated: false, label, executed: true };
-      }
       if (!navigated) {
         // The element carries an href but clicking it didn't navigate — a link
         // whose default was preventDefault'd, or a non-anchor with an href
@@ -2344,13 +2346,13 @@
     .nn-min:hover, .nn-reset:hover { background: rgba(255,255,255,.24); }
 
     /* transparent so the panel's own sky shows through the conversation */
-    .nn-log { flex: 1; overflow-y: auto; padding: 16px; background: transparent; display: flex; flex-direction: column; gap: 10px; }
+    .nn-log { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 16px; background: transparent; display: flex; flex-direction: column; gap: 10px; }
     .nn-log::-webkit-scrollbar { width: 8px; }
     .nn-log::-webkit-scrollbar-track { background: transparent; }
     .nn-log::-webkit-scrollbar-thumb { background: rgba(88,142,184,.28); border-radius: 8px; }
     .nn-log::-webkit-scrollbar-thumb:hover { background: rgba(88,142,184,.45); }
 
-    .nn-msg { max-width: 84%; padding: 10px 13px; border-radius: 17px; font-size: 14px; line-height: 1.45; white-space: pre-wrap; word-wrap: break-word; animation: nn-in .2s ease; }
+    .nn-msg { max-width: 84%; min-width: 0; padding: 10px 13px; border-radius: 17px; font-size: 14px; line-height: 1.45; white-space: pre-wrap; word-wrap: break-word; overflow-wrap: anywhere; animation: nn-in .2s ease; }
     @keyframes nn-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
     .nn-user {
       align-self: flex-end; color: #fff; border-bottom-right-radius: 6px;
@@ -2402,17 +2404,18 @@
     .nn-undo:disabled { opacity: .5; cursor: default; }
 
     .nn-inputbar {
-      display: flex; gap: 8px; padding: 12px; align-items: center;
+      display: flex; gap: 8px; padding: 12px; align-items: flex-end;
       background: linear-gradient(180deg, rgba(255,255,255,.30), rgba(255,255,255,.62));
       border-top: 1px solid rgba(255,255,255,.7);
       backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
     }
     .nn-input {
       flex: 1; border: 1px solid var(--nn-edge); border-radius: 14px; padding: 11px 14px;
-      font-size: 14px; outline: none; color: var(--nn-ink);
+      font-size: 14px; font-family: inherit; line-height: 1.4; outline: none; color: var(--nn-ink);
       background: rgba(255,255,255,.66);
       box-shadow: inset 0 1px 3px rgba(23,72,110,.08);
       transition: border-color .14s ease, box-shadow .14s ease, background .14s ease;
+      resize: none; height: 42px; min-height: 0; max-height: 120px; overflow-y: auto;
     }
     .nn-input::placeholder { color: rgba(91,120,147,.75); }
     .nn-input:focus {
