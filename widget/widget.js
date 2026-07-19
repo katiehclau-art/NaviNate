@@ -529,7 +529,7 @@
   // Tag every interactive element with a stable data-agent-id and return a
   // compact JSON snapshot for the backend to reason over.
   const SELECTOR =
-    'a[href], button, input:not([type=hidden]), select, textarea, ' +
+    'a[href], area[href], [href], button, input:not([type=hidden]), select, textarea, ' +
     '[role=button], [role=link], [role=tab], [role=menuitem], [role=slider], ' +
     '[role=radio], [role=checkbox], [role=switch], [onclick]';
 
@@ -1315,12 +1315,34 @@
     return { url: target.href };
   }
 
-  // Does clicking this probably leave the page? We can't know for sure (any
-  // handler can redirect), but a plain link is the common case worth waiting on.
+  // The page-navigating href on an element, or "" if it hasn't got one. Covers
+  // <a>/<area>, SVG <a> (whose href lives in href.baseVal), and any element that
+  // simply carries an href attribute. Excludes hrefs that DON'T load a page —
+  // same-page anchors (#…, handled by a plain click that scrolls) and non-http
+  // schemes (javascript:/mailto:/tel:/sms:, which the browser handles itself).
+  function linkHref(node) {
+    if (!node || !node.getAttribute) return "";
+    let href = node.getAttribute("href");
+    if (!href && node.href && typeof node.href === "object") href = node.href.baseVal; // SVG
+    href = (href || "").trim();
+    if (!href || href.startsWith("#")) return "";
+    if (/^(javascript|mailto|tel|sms|data|blob):/i.test(href)) return "";
+    return href;
+  }
+
+  // Does clicking this probably leave the page? Any element with a real href is
+  // the common case worth waiting on (so voice can finish its sentence first).
   function likelyNavigates(node) {
-    if (!node || node.tagName !== "A") return false;
-    const href = node.getAttribute("href") || "";
-    return href && !href.startsWith("#") && !/^javascript:/i.test(href);
+    return !!linkHref(node);
+  }
+
+  // A hash-only URL change (same document, no reload) is NOT a navigation the
+  // loop should stop and wait for — boot() only re-runs on a real page load, so
+  // treating an in-page anchor / hash-router jump as a navigation freezes the
+  // agent until the next real load. Compare without the hash.
+  function leftThePage(fromUrl, unloadFired) {
+    if (unloadFired) return true;
+    return window.location.href.replace(/#.*$/, "") !== fromUrl.replace(/#.*$/, "");
   }
 
   async function performAction(action) {
@@ -1333,9 +1355,35 @@
         const label = elementText(node);
         await moveCursorToNode(node);
         await letVoiceFinishSpeaking();
+        // Watch for the page actually starting to unload. A "navigate" whose
+        // target turns out NOT to navigate — a #anchor, a target=_blank link, or
+        // an element that merely toggles something — must not report success:
+        // otherwise the loop stops waiting for a reload that never comes and the
+        // agent freezes (with the continuation flag stuck) until the next page
+        // load happens to resume it. Same guard the click branch uses.
+        const before = window.location.href;
+        let leaving = false;
+        const onLeave = () => { leaving = true; };
+        window.addEventListener("pagehide", onLeave);
+        window.addEventListener("beforeunload", onLeave);
         armContinuation(reason || `Navigating to ${label || "another page"}…`);
         node.click();
-        return { navigated: true, label, executed: true };
+        await sleep(400); // give a redirect time to begin unloading
+        window.removeEventListener("pagehide", onLeave);
+        window.removeEventListener("beforeunload", onLeave);
+        if (leftThePage(before, leaving)) {
+          return { navigated: true, label, executed: true };
+        }
+        // Didn't move. Follow the element's href directly if it has one;
+        // otherwise the navigate was a misfire — disarm and let the loop take the
+        // NEXT step in place rather than freeze waiting for a reload.
+        const href = linkHref(node);
+        if (href) {
+          window.location.href = new URL(href, window.location.href).href; // continuation still armed
+          return { navigated: true, label, executed: true };
+        }
+        disarmContinuation();
+        return { navigated: false, label, executed: true };
       }
       if (url) {
         // The model can hallucinate a plausible-looking path ("/faq") the site has
@@ -1379,8 +1427,21 @@
       await sleep(400); // give a redirect time to begin unloading
       window.removeEventListener("pagehide", onLeave);
       window.removeEventListener("beforeunload", onLeave);
-      const navigated = leaving || window.location.href !== before;
-      if (!navigated) disarmContinuation();
+      const navigated = leftThePage(before, leaving);
+      if (!navigated) {
+        // The element carries an href but clicking it didn't navigate — a link
+        // whose default was preventDefault'd, or a non-anchor with an href
+        // attribute the browser doesn't follow on its own. Honour it as a link
+        // and go there. It came from the live DOM (not the model), so no
+        // hallucination/404 guard is needed — just follow it.
+        const href = linkHref(node);
+        if (href) {
+          await letVoiceFinishSpeaking();
+          window.location.href = new URL(href, window.location.href).href; // continuation already armed
+          return { navigated: true, label, executed: true };
+        }
+        disarmContinuation();
+      }
       return { navigated, label, executed: true };
     }
 
