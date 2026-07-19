@@ -302,7 +302,6 @@ serves deployed functions under `/functions/<name>`:
   "company_website_url": "https://acme.com",
   "bot_name": "Acme Helper",
   "welcome_message": "Hi! I'm Acme's assistant — what can I help you find?",
-  "launcher_icon": "🤖",
   "suggested_prompts": ["Find an EU server", "Compare pricing", "Contact support"],
   "widget_position": "bottom-right",
   "max_auto_steps": 8,
@@ -317,7 +316,6 @@ serves deployed functions under `/functions/<name>`:
 | `company_website_url` | The client's site; the scraper crawls this (`node scrape.js --client <id>`). |
 | `bot_name` | Name shown in the header + launcher tooltip. |
 | `welcome_message` | First greeting bubble. |
-| `launcher_icon` | Emoji on the launcher bubble + header. |
 | `suggested_prompts` | Starter chips shown before the first message (array, or comma/newline string; max 6). |
 | `widget_position` | `"bottom-right"` (default) or `"bottom-left"`. |
 | `max_auto_steps` | Cap on autonomous steps per goal (1–20). |

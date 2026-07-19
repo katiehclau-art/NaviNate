@@ -113,7 +113,6 @@
   let theme = {
     primaryColor: "#4f46e5",
     botName: "NaviNate Assistant",
-    launcherIcon: "", // empty => render the default NaviNate brand icon (see iconMarkup); a client can override with an emoji via Base44
     welcomeMessage: "Hi! I can explore this site and click through it for you. What are you trying to do?",
     suggestedPrompts: [],
     widgetPosition: "bottom-right",
@@ -161,11 +160,10 @@
   };
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-  // The launcher/header icon: a client-configured emoji overrides it via Base44;
-  // otherwise fall back to the default NaviNate brand mark (served alongside the
-  // demo site, so it works from the same origin the widget was loaded from).
+  // The launcher/header icon is always the NaviNate brand mark (served alongside
+  // the demo site, so it works from the same origin the widget was loaded from).
+  // No emoji override — the brand icon is the identity.
   function iconMarkup(cls) {
-    if (theme.launcherIcon) return escapeHtml(theme.launcherIcon);
     return `<img class="nn-icon-img ${cls}" src="${BACKEND}/assets/navinate-icon.png" alt="${escapeHtml(theme.botName)}" />`;
   }
 
@@ -1970,7 +1968,9 @@
 
     .nn-launcher {
       position: fixed; right: 22px; bottom: 22px; z-index: 2147483000;
-      width: 60px; height: 60px; border: none; cursor: pointer; padding: 0;
+      /* footprint tracks the scaled logo (60px box × 2.5) so the whole visible
+         mark is clickable, not just its centre */
+      width: 86px; height: 86px; border: none; cursor: pointer; padding: 0;
       background: transparent; color: #fff; font-size: 26px; line-height: 1;
       display: flex; align-items: center; justify-content: center;
       transition: transform .18s cubic-bezier(.34,1.4,.5,1);
@@ -1980,18 +1980,29 @@
     .nn-hidden { display: none !important; }
 
     .nn-icon-img { display: block; object-fit: contain; border-radius: 8px; }
-    /* fills the launcher footprint — no button chrome behind it, just the logo,
-       which already carries its own rounded-square background + shadow-friendly art */
-    .nn-launcher-icon { width: 60px; height: 60px; border-radius: 14px; filter: drop-shadow(0 8px 20px rgba(0,0,0,.3)); transition: transform .15s ease; }
-    .nn-header-icon { display: inline-block; width: 24px; height: 24px; border-radius: 7px; }
+    /* The brand PNG carries a lot of transparent padding, so the mark reads small
+       inside its box. Scaling the artwork up (rather than the box) grows the mark
+       ~2.5x while the launcher/header footprints stay put — the overflow is only
+       transparent padding, so nothing visually collides. */
+    .nn-launcher-icon {
+      width: 60px; height: 60px; border-radius: 14px;
+      transform: scale(2.5); transform-origin: center;
+      filter: drop-shadow(0 8px 20px rgba(0,0,0,.3)); transition: transform .15s ease;
+    }
+    .nn-header-icon {
+      display: inline-block; width: 24px; height: 24px; border-radius: 7px;
+      transform: scale(2.5); transform-origin: center;
+    }
 
     /* "still working" cue while the agent is acting and the panel is minimized —
        the fake cursor is the primary signal, this is the backup for when it's
        out of view: the launcher logo breathes instead of sitting static. */
     .nn-launcher-busy .nn-launcher-icon { animation: nn-icon-pulse 1.1s ease-in-out infinite; }
+    /* keyed off the 2.5x base scale so the pulse breathes AROUND it rather than
+       snapping the logo back to its small resting size while working */
     @keyframes nn-icon-pulse {
-      0%, 100% { transform: scale(1); }
-      50% { transform: scale(1.18); }
+      0%, 100% { transform: scale(2.5); }
+      50% { transform: scale(2.95); }
     }
 
     /* bottom-left placement when the client configures widget_position */

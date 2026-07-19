@@ -44,7 +44,6 @@ const DEFAULT_CONFIG = {
   aggressiveness: "autonomous", // "suggestive" | "autonomous" | "fully_autonomous"
   companyWebsiteUrl: "", // the client's site (used by the scraper to build their site map)
   welcomeMessage: "Hi! I can explore this site and click through it for you. What are you trying to do?",
-  launcherIcon: "", // emoji shown on the launcher bubble + header; empty => widget's default NaviNate brand icon
   suggestedPrompts: [], // starter chips shown before the first message, e.g. ["Find an EU server"]
   widgetPosition: "bottom-right", // "bottom-right" | "bottom-left"
   maxAutoSteps: 8, // safety cap on autonomous steps per goal
@@ -57,7 +56,7 @@ const configCache = new Map();
 
 // Base44 returns the client's settings in snake_case, e.g.
 //   { brand_color, system_prompt, aggressiveness, company_website_url,
-//     welcome_message, launcher_icon, suggested_prompts, widget_position,
+//     welcome_message, suggested_prompts, widget_position,
 //     max_auto_steps, enabled }
 // Map those onto our internal camelCase config. We also accept the camelCase
 // names directly, so either shape works.
@@ -75,7 +74,6 @@ function mapClientConfig(raw) {
   set("companyWebsiteUrl", str(pick("company_website_url", "companyWebsiteUrl")));
   set("botName", str(pick("bot_name", "botName")));
   set("welcomeMessage", str(pick("welcome_message", "welcomeMessage")));
-  set("launcherIcon", str(pick("launcher_icon", "launcherIcon")));
   set("widgetPosition", str(pick("widget_position", "widgetPosition")));
   set("voiceId", str(pick("voice_id", "voiceId", "elevenlabs_voice_id")));
 
@@ -457,7 +455,6 @@ app.get("/config", async (req, res) => {
     aggressiveness: config.aggressiveness,
     companyWebsiteUrl: config.companyWebsiteUrl,
     welcomeMessage: config.welcomeMessage,
-    launcherIcon: config.launcherIcon,
     suggestedPrompts: config.suggestedPrompts,
     widgetPosition: config.widgetPosition,
     maxAutoSteps: config.maxAutoSteps,
