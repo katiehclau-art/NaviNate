@@ -913,6 +913,13 @@
             )
           );
         } else if (r.failure) {
+          if (r.terminal) {
+            showReply(r.failure);
+            notes.push(r.failure);
+            state.history.push(replyEntry(r.failure));
+            stuck = false;
+            break;
+          }
           // The action was refused (e.g. a URL that doesn't exist). Tell the
           // model exactly why, as a system turn, so it picks a real route instead
           // of retrying the same dead end.
@@ -1429,9 +1436,9 @@
       : "";
     const text = `${ownText} ${formText}`.replace(/\s+/g, " ").toLowerCase();
     const isSubmitControl =
-      node.tagName === "BUTTON" && (!node.type || node.type === "submit") ||
+      node.tagName === "BUTTON" && form && (!node.type || node.type === "submit") ||
       node.tagName === "INPUT" && /^(submit|image)$/i.test(node.type || "");
-    const paymentContext = /\b(pay|payment|card|billing|checkout|cart|order|purchase|booking|reservation|subscribe|subscription|invoice)\b/.test(text);
+    const paymentContext = /\b(pay|payment|card|billing|checkout|order|purchase|booking|reservation|subscribe|subscription|invoice)\b/.test(text);
     const finalCommitment =
       /\b(place|submit|confirm|complete|finish|finalize|send|pay|purchase|buy|order|book|reserve|subscribe)\b/.test(text) &&
       /\b(order|payment|purchase|checkout|booking|reservation|subscription|application|form|request|quote|invoice)\b/.test(text);
@@ -1454,6 +1461,10 @@
   function leftThePage(fromUrl, unloadFired) {
     if (unloadFired) return true;
     return window.location.href.replace(/#.*$/, "") !== fromUrl.replace(/#.*$/, "");
+  }
+
+  function sameDocumentNavigation(fromUrl, unloadFired) {
+    return !unloadFired && window.location.href.replace(/#.*$/, "") !== fromUrl.replace(/#.*$/, "");
   }
 
   async function performAction(action) {
@@ -1484,6 +1495,10 @@
         window.removeEventListener("pagehide", onLeave);
         window.removeEventListener("beforeunload", onLeave);
         if (leftThePage(before, leaving)) {
+          if (sameDocumentNavigation(before, leaving)) {
+            disarmContinuation();
+            return { navigated: false, label, executed: true };
+          }
           return { navigated: true, label, executed: true };
         }
         // Didn't move. Follow the element's href directly if it has one;
@@ -1526,7 +1541,7 @@
       const blocked = highCommitmentActionReason(node);
       if (blocked) {
         await flashClick(node);
-        return { navigated: false, label, executed: false, failure: blocked };
+        return { navigated: false, label, executed: false, failure: blocked, terminal: true };
       }
       if (likelyNavigates(node)) await letVoiceFinishSpeaking();
       await flashClick(node);
@@ -1549,6 +1564,10 @@
       window.removeEventListener("pagehide", onLeave);
       window.removeEventListener("beforeunload", onLeave);
       const navigated = leftThePage(before, leaving);
+      if (sameDocumentNavigation(before, leaving)) {
+        disarmContinuation();
+        return { navigated: false, label, executed: true };
+      }
       if (!navigated) {
         // The element carries an href but clicking it didn't navigate — a link
         // whose default was preventDefault'd, or a non-anchor with an href
