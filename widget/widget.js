@@ -268,7 +268,10 @@
 
     // Fake cursor
     cursor = el("div", { className: "nn-cursor" });
-    cursor.innerHTML = svgCursor() + '<div class="nn-cursor-caption"></div>';
+    cursor.innerHTML =
+      `<img class="nn-cursor-pose nn-cursor-pose-hover" src="${BACKEND}/assets/cursor-hover.png" alt="" />` +
+      `<img class="nn-cursor-pose nn-cursor-pose-click" src="${BACKEND}/assets/cursor-click.png" alt="" />` +
+      '<div class="nn-cursor-caption"></div>';
     cursorCaption = cursor.querySelector(".nn-cursor-caption");
     root.appendChild(cursor);
 
@@ -1444,7 +1447,7 @@
   async function flashClick(node) {
     cursor.classList.add("nn-cursor-click");
     pulseHighlight(node, 600);
-    await sleep(180);
+    await sleep(400); // long enough to actually register the click pose vs. the hover pose
     cursor.classList.remove("nn-cursor-click");
   }
 
@@ -1938,12 +1941,6 @@
   }
 
   // ---- assets --------------------------------------------------------------
-  function svgCursor() {
-    return `<svg width="26" height="26" viewBox="0 0 24 24" fill="none">
-      <path d="M4 2l6 16 2.5-6.5L19 9 4 2z" fill="#111" stroke="#fff" stroke-width="1.4" stroke-linejoin="round"/>
-    </svg>`;
-  }
-
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, (c) => (
       { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
@@ -2308,18 +2305,24 @@
 
     .nn-cursor {
       position: fixed; left: 0; top: 0; z-index: 2147483600; pointer-events: none;
-      width: 26px; height: 26px; margin: -4px 0 0 -4px; opacity: 0;
+      width: 74px; height: 44px; margin: -1px 0 0 -10px; opacity: 0;
       transition: transform .6s cubic-bezier(.22,.61,.36,1), opacity .2s ease;
-      filter: drop-shadow(0 2px 3px rgba(0,0,0,.35));
     }
     .nn-cursor-active { opacity: 1; }
-    .nn-cursor-click { animation: nn-tap .18s ease; }
+    /* two hand poses (hand + logo art from the source PNG) stacked in place —
+       the fingertip lands at nearly the same spot in both crops, so a plain
+       crossfade (no per-pose offset) is enough to avoid a visible jump */
+    .nn-cursor-pose {
+      position: absolute; top: 0; left: 0; width: 74px; height: 44px;
+      image-rendering: pixelated; filter: drop-shadow(0 2px 3px rgba(0,0,0,.35));
+      transition: opacity .12s ease;
+    }
+    .nn-cursor-pose-click { opacity: 0; }
+    .nn-cursor.nn-cursor-click .nn-cursor-pose-hover { opacity: 0; }
+    .nn-cursor.nn-cursor-click .nn-cursor-pose-click { opacity: 1; }
     .nn-cursor-caption {
-      position: absolute; left: 18px; top: 28px; width: max-content; max-width: 230px;
-      padding: 8px 11px; border-radius: 11px;
-      background: linear-gradient(180deg, rgba(255,255,255,.92), rgba(232,245,254,.86));
-      backdrop-filter: saturate(170%) blur(14px); -webkit-backdrop-filter: saturate(170%) blur(14px);
-      border: 1px solid var(--nn-edge); color: var(--nn-ink);
+      position: absolute; left: 40px; top: 46px; width: max-content; max-width: 230px;
+      padding: 7px 10px; border-radius: 9px; background: #151722; color: #fff;
       font-size: 12px; font-weight: 500; line-height: 1.35; letter-spacing: 0;
       box-shadow: 0 8px 22px rgba(23,72,110,.24); filter: none;
       opacity: 0; transform: translateY(-3px) scale(.96); transform-origin: top left;
@@ -2331,12 +2334,11 @@
       transform: rotate(45deg);
     }
     .nn-cursor-caption.nn-caption-visible { opacity: 1; transform: none; }
-    .nn-cursor-left .nn-cursor-caption { left: auto; right: 14px; transform-origin: top right; }
+    .nn-cursor-left .nn-cursor-caption { left: auto; right: 26px; transform-origin: top right; }
     .nn-cursor-left .nn-cursor-caption::before { left: auto; right: 5px; }
-    .nn-cursor-above .nn-cursor-caption { top: auto; bottom: 27px; transform-origin: bottom left; }
+    .nn-cursor-above .nn-cursor-caption { top: auto; bottom: 49px; transform-origin: bottom left; }
     .nn-cursor-above.nn-cursor-left .nn-cursor-caption { transform-origin: bottom right; }
     .nn-cursor-above .nn-cursor-caption::before { top: auto; bottom: -5px; }
-    @keyframes nn-tap { 0% { transform-origin: 0 0; } 50% { filter: drop-shadow(0 0 0 rgba(0,0,0,0)) brightness(1.4); } }
 
     .nn-ring {
       position: fixed; z-index: 2147483500; pointer-events: none; border-radius: 10px;
