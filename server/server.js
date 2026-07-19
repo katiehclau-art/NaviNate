@@ -12,7 +12,9 @@ import dotenv from "dotenv";
 import OpenAI from "openai";
 import fs from "node:fs";
 import path from "node:path";
+import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
+import { ensureAgent, resolveDefaultVoice, signedUrl, speak, voiceConfigured, voiceDefaults } from "./voice.js";
 
 dotenv.config();
 
@@ -47,6 +49,8 @@ const DEFAULT_CONFIG = {
   widgetPosition: "bottom-right", // "bottom-right" | "bottom-left"
   maxAutoSteps: 8, // safety cap on autonomous steps per goal
   enabled: true, // master on/off switch for the widget on the client's site
+  voiceEnabled: true, // show the mic button (needs ELEVENLABS_API_KEY server-side)
+  voiceId: "", // ElevenLabs voice for this client; blank = the server default
 };
 const CONFIG_TTL_MS = 60 * 1000;
 const configCache = new Map();
@@ -73,6 +77,7 @@ function mapClientConfig(raw) {
   set("welcomeMessage", str(pick("welcome_message", "welcomeMessage")));
   set("launcherIcon", str(pick("launcher_icon", "launcherIcon")));
   set("widgetPosition", str(pick("widget_position", "widgetPosition")));
+  set("voiceId", str(pick("voice_id", "voiceId", "elevenlabs_voice_id")));
 
   // suggested_prompts: accept a real array, or a comma/newline-separated string.
   const prompts = pick("suggested_prompts", "suggestedPrompts");
@@ -90,6 +95,11 @@ function mapClientConfig(raw) {
   // enabled: accept boolean or "true"/"false"/"0"/"1".
   const enabled = pick("enabled", "is_enabled", "active");
   if (enabled != null) out.enabled = !(enabled === false || enabled === "false" || enabled === 0 || enabled === "0");
+
+  const voiceEnabled = pick("voice_enabled", "voiceEnabled");
+  if (voiceEnabled != null) {
+    out.voiceEnabled = !(voiceEnabled === false || voiceEnabled === "false" || voiceEnabled === 0 || voiceEnabled === "0");
+  }
 
   return out;
 }
@@ -180,15 +190,33 @@ function sitemapPath(clientId) {
   return path.join(__dirname, "..", "scraper", safeId ? path.join("sitemaps", `${safeId}.json`) : "sitemap.json");
 }
 
+// The sitemap is { url: description }; the dashboard wants a list it can render.
+// Descriptions are trimmed because a whole crawl's worth of them is a lot of
+// payload for what is, on screen, one line per row.
+function sitemapToList(map) {
+  return Object.entries(map || {}).map(([url, description]) => ({
+    url,
+    description: String(description || "").slice(0, 300),
+  }));
+}
+
 // Info about the currently-saved map for a client (for the dashboard status card).
+// `urls` is the full list of pages the agent currently knows about — the same set
+// that gets injected into its system prompt, so the client can see exactly what
+// their assistant can reach.
 function savedSitemapInfo(clientId) {
   try {
     const p = sitemapPath(clientId);
-    if (!fs.existsSync(p)) return { exists: false, pages: 0, updatedAt: null };
+    if (!fs.existsSync(p)) return { exists: false, pages: 0, updatedAt: null, urls: [] };
     const map = JSON.parse(fs.readFileSync(p, "utf8"));
-    return { exists: true, pages: Object.keys(map).length, updatedAt: fs.statSync(p).mtime.toISOString() };
+    return {
+      exists: true,
+      pages: Object.keys(map).length,
+      updatedAt: fs.statSync(p).mtime.toISOString(),
+      urls: sitemapToList(map),
+    };
   } catch {
-    return { exists: false, pages: 0, updatedAt: null };
+    return { exists: false, pages: 0, updatedAt: null, urls: [] };
   }
 }
 
@@ -203,7 +231,17 @@ async function startScrape(clientId, startUrl) {
   const existing = scrapeJobs.get(clientId);
   if (existing && existing.state === "running") return scrapeStatus(clientId);
 
-  const job = { state: "running", pages: 0, url: startUrl, startedAt: new Date().toISOString(), finishedAt: null, error: null };
+  // `found` fills in as the crawl walks the site, so the dashboard can list pages
+  // live instead of showing a bare counter until the whole crawl finishes.
+  const job = {
+    state: "running",
+    pages: 0,
+    url: startUrl,
+    startedAt: new Date().toISOString(),
+    finishedAt: null,
+    error: null,
+    found: [],
+  };
   scrapeJobs.set(clientId, job);
 
   // Import Puppeteer lazily so the server still boots if scraper deps aren't
@@ -215,20 +253,40 @@ async function startScrape(clientId, startUrl) {
         startUrl,
         maxPages: SCRAPE_MAX_PAGES,
         maxDepth: SCRAPE_MAX_DEPTH,
-        onProgress: ({ pages }) => { job.pages = pages; },
+        onProgress: ({ pages, lastUrl, desc, error }) => {
+          job.pages = pages;
+          if (lastUrl) {
+            job.found.push({
+              url: lastUrl,
+              description: String(desc || "").slice(0, 300),
+              error: error || null,
+            });
+          }
+        },
       });
       const p = sitemapPath(clientId);
       fs.mkdirSync(path.dirname(p), { recursive: true });
       fs.writeFileSync(p, JSON.stringify(siteMap, null, 2));
-      job.pages = Object.keys(siteMap).length;
+      const urls = sitemapToList(siteMap);
+      job.pages = urls.length;
+      job.found = urls; // settle on the saved map (drops pages that errored out)
       job.state = "done";
       job.finishedAt = new Date().toISOString();
       console.log(`🕸  scrape for "${clientId}" done — ${job.pages} pages`);
+      // Push the result to Base44 too, so the dashboard can record what the
+      // agent learned without having to be open and polling at the time.
+      sendAnalytics(clientId, {
+        event: "scrape_completed",
+        pages: job.pages,
+        url: startUrl,
+        urls: urls.map((u) => u.url),
+      });
     } catch (err) {
       job.state = "error";
       job.error = String(err.message || err).slice(0, 300);
       job.finishedAt = new Date().toISOString();
       console.warn(`scrape for "${clientId}" failed:`, job.error);
+      sendAnalytics(clientId, { event: "scrape_failed", reason: job.error, url: startUrl });
     }
   })();
 
@@ -275,7 +333,10 @@ const BROWSER_ACTION_TOOL = {
         },
         url: {
           type: "string",
-          description: "Destination path or URL. Only for action_type=navigate.",
+          description:
+            "Destination path or URL. Only for action_type=navigate. It MUST be copied verbatim from the " +
+            "KNOWN SITE MAP or from an href in pageElements — never guessed, shortened, or constructed from " +
+            "the page's wording. Guessed paths 404 and strand the visitor.",
         },
         reason: {
           type: "string",
@@ -333,6 +394,12 @@ You can only ACT on elements present in pageElements. If what you need isn't the
 Worked example — "add the most expensive plan": read the prices from pageText/context, find the highest, then click the "Add to Cart" whose context matches that price. That's usually ONE click — no need to open any details page.
 
 If the goal cannot be satisfied on this page (e.g. the user asks for a combination of filters that yields no results, or an item that doesn't exist here), don't keep clicking — say so plainly and suggest the closest available alternative you can see in pageText.
+
+NAVIGATION RULES (a guessed URL is worse than no action at all):
+- You may ONLY navigate to a URL that appears verbatim in the KNOWN SITE MAP below, or as an "href" on an element in pageElements. If neither contains it, the page does not exist as far as you are concerned.
+- Never invent, guess, or infer a path from a page's wording. "/faq", "/pricing", "/help" are not real just because the site talks about FAQs, pricing or help.
+- If the destination you want isn't in the site map or in any href, prefer clicking a link/menu that leads there. If there is no such link, say plainly that you can't find that page and offer the closest one that IS listed.
+- If a navigation is reported back to you as failed or not found, do NOT retry it or try a similar invented path — pick a real link from pageElements, or tell the user.
 
 HOW TO ACT:
 - To do something on the page, call the execute_browser_action tool. Use "select" with an exact option label or value for native select dropdowns. Use "slider" with a numeric value (on-step, within min/max) for range sliders.
@@ -395,6 +462,10 @@ app.get("/config", async (req, res) => {
     widgetPosition: config.widgetPosition,
     maxAutoSteps: config.maxAutoSteps,
     enabled: config.enabled,
+    // Voice is only offered when the client wants it AND the server actually
+    // holds an ElevenLabs key — otherwise the widget hides the mic entirely
+    // rather than showing a button that can only fail.
+    voiceEnabled: config.voiceEnabled !== false && voiceConfigured(),
   });
 });
 
@@ -454,10 +525,96 @@ app.get("/scrape/status", (req, res) => {
   res.json(scrapeStatus(clientId));
 });
 
+// ---------------------------------------------------------------------------
+// Voice (ElevenLabs). The browser never sees the API key: it asks us for a
+// short-lived signed WebSocket URL and talks to ElevenLabs directly from there,
+// which keeps the audio path peer-to-server (no relay hop = lower latency).
+// ---------------------------------------------------------------------------
+
+// Is voice available at all? The widget calls this before showing the mic.
+app.get("/voice/status", async (_req, res) => {
+  const out = { configured: voiceConfigured(), ...voiceDefaults };
+  if (voiceConfigured()) {
+    try {
+      out.voiceId = await resolveDefaultVoice();
+    } catch (err) {
+      out.voiceError = String(err.message || err).slice(0, 300);
+    }
+  }
+  res.json(out);
+});
+
+// Mint a session. Also returns the per-session overrides the widget replays over
+// the socket, so a persona edited in Base44 takes effect on the very next call
+// without re-provisioning anything.
+app.get("/voice/session", async (req, res) => {
+  const clientId = req.query.clientId || "";
+  if (!voiceConfigured()) {
+    return res.status(503).json({ error: "Voice is not configured on this server (set ELEVENLABS_API_KEY)." });
+  }
+  try {
+    const config = await getClientConfig(clientId);
+    if (config.voiceEnabled === false) return res.status(403).json({ error: "Voice is disabled for this client." });
+
+    const agentId = await ensureAgent(clientId, config);
+    const url = await signedUrl(agentId);
+    sendAnalytics(clientId, { event: "voice_session_started" });
+    res.json({
+      signedUrl: url,
+      agentId,
+      botName: config.botName,
+      voiceId: config.voiceId || (await resolveDefaultVoice()),
+      welcomeMessage: config.welcomeMessage,
+    });
+  } catch (err) {
+    console.error("voice session error:", err);
+    sendAnalytics(clientId, { event: "error", reason: `voice: ${String(err.message || err).slice(0, 200)}` });
+    res.status(500).json({ error: String(err.message || err).slice(0, 300) });
+  }
+});
+
+// Force a re-provision (the dashboard's "update my voice agent" button).
+app.post("/voice/provision", async (req, res) => {
+  const clientId = req.body?.clientId || req.query.clientId || "";
+  try {
+    const config = await getClientConfig(clientId);
+    const agentId = await ensureAgent(clientId, config);
+    res.json({ ok: true, agentId });
+  } catch (err) {
+    res.status(500).json({ error: String(err.message || err).slice(0, 300) });
+  }
+});
+
+// Narration mode: speak a line of text. Used when there's no live conversation
+// (mic denied, or the visitor typed instead of talking) so the assistant still
+// has a voice. Streams the audio through so playback starts before ElevenLabs
+// has finished generating.
+app.post("/voice/speak", async (req, res) => {
+  const { text = "", clientId = "" } = req.body || {};
+  const line = String(text).trim().slice(0, 800);
+  if (!line) return res.status(400).json({ error: "text is required" });
+  try {
+    const config = await getClientConfig(clientId);
+    const stream = await speak({ text: line, voiceId: config.voiceId });
+    res.type("audio/mpeg");
+    Readable.fromWeb(stream).pipe(res);
+  } catch (err) {
+    console.error("tts error:", err);
+    res.status(500).json({ error: String(err.message || err).slice(0, 300) });
+  }
+});
+
 // Serve the widget so the client's <script src="https://<ngrok>/widget.js"> works.
 app.get("/widget.js", (_req, res) => {
   res.type("application/javascript");
   res.sendFile(path.join(__dirname, "..", "widget", "widget.js"));
+});
+
+// The voice client, loaded on demand by widget.js the first time someone taps
+// the mic — so sites that never use voice don't pay for the code.
+app.get("/widget-voice.js", (_req, res) => {
+  res.type("application/javascript");
+  res.sendFile(path.join(__dirname, "..", "widget", "voice.js"));
 });
 
 // Local demo site (a deliberately maze-like fake "client" website) so you can
@@ -538,6 +695,7 @@ app.listen(PORT, () => {
   console.log(`\n🧭  NaviNate backend running on http://localhost:${PORT}`);
   console.log(`    model:   ${MODEL}`);
   console.log(`    base44:  ${BASE44_URL || "(none — using built-in defaults)"}`);
+  console.log(`    voice:   ${voiceConfigured() ? `ElevenLabs (${voiceDefaults.ttsModel})` : "(off — set ELEVENLABS_API_KEY)"}`);
   console.log(`\n    Expose it with:  ngrok http ${PORT}`);
   console.log(`    Then embed:      <script src="https://<your-ngrok>/widget.js?clientId=CLIENT_ID"></script>\n`);
 });
