@@ -368,11 +368,3 @@ and a **Top questions/issues** list built by clustering `message_sent` text (and
 5. The widget animates the fake cursor to that element and performs it, then loops —
    re-scanning the now-updated page and taking the next step (up to a safety cap), even
    across page navigations (state is kept in `sessionStorage`).
-
-## Demo tips
-
-- **The fake cursor is the "wow".** Keep the browser window visible when you present.
-- Use a deliberately **maze-like demo site** so the agent looks like a superpower.
-- Set `aggressiveness: "suggestive"` if you want the bot to point-and-explain instead of
-  auto-clicking during a live demo.
-- Out of time on the scraper? Skip it — the agent works fine without `sitemap.json`.
