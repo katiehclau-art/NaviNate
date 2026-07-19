@@ -530,7 +530,8 @@
   // compact JSON snapshot for the backend to reason over.
   const SELECTOR =
     'a[href], button, input:not([type=hidden]), select, textarea, ' +
-    '[role=button], [role=link], [role=tab], [role=menuitem], [role=slider], [onclick]';
+    '[role=button], [role=link], [role=tab], [role=menuitem], [role=slider], ' +
+    '[role=radio], [role=checkbox], [role=switch], [onclick]';
 
   // Sliders come in two flavors: native <input type=range> (has real min/max/step/
   // value) and custom ARIA role="slider" widgets (only the aria-value* attributes).
@@ -538,6 +539,22 @@
   const isRangeInput = (node) => node.tagName === "INPUT" && node.type === "range";
   const isAriaSlider = (node) => node.getAttribute("role") === "slider";
   const isSlider = (node) => isRangeInput(node) || isAriaSlider(node);
+
+  // Checkable controls — native radio/checkbox inputs plus their ARIA
+  // equivalents. Radios and checkboxes are actuated with a plain "click"; the
+  // point of surfacing them specially is so the model can SEE which option is
+  // currently selected (via `checked`) and not re-click one that's already on.
+  const isRadio = (node) =>
+    (node.tagName === "INPUT" && node.type === "radio") || node.getAttribute("role") === "radio";
+  const isCheckbox = (node) =>
+    (node.tagName === "INPUT" && node.type === "checkbox") ||
+    node.getAttribute("role") === "checkbox" ||
+    node.getAttribute("role") === "switch";
+  const isCheckable = (node) => isRadio(node) || isCheckbox(node);
+  function isChecked(node) {
+    if (node.tagName === "INPUT") return !!node.checked;
+    return node.getAttribute("aria-checked") === "true";
+  }
   function sliderMin(node) {
     if (isRangeInput(node)) return node.min || "0"; // browser defaults when unset
     if (isAriaSlider(node)) return node.getAttribute("aria-valuemin") || undefined;
@@ -593,14 +610,20 @@
       elements.push({
         id: agentId,
         tag: node.tagName.toLowerCase(),
-        // ARIA slider widgets aren't <input type=range>, so surface "slider" here
-        // too — it's the model's only cue that a non-native element is one.
-        type: node.getAttribute("type") || (isAriaSlider(node) ? "slider" : undefined),
+        // Custom ARIA widgets aren't <input>, so surface their role as the type —
+        // it's the model's only cue that a non-native element is a slider,
+        // radio, or checkbox it can act on.
+        type:
+          node.getAttribute("type") ||
+          (isAriaSlider(node) ? "slider" : isCheckable(node) ? node.getAttribute("role") : undefined),
         text: own,
         value: isSlider(node) ? sliderValue(node) : node.value || undefined,
         min: isSlider(node) ? sliderMin(node) : undefined,
         max: isSlider(node) ? sliderMax(node) : undefined,
         step: isSlider(node) ? sliderStep(node) : undefined,
+        // radio/checkbox: whether this option is currently selected. Lets the
+        // model pick the right one and skip any that's already chosen.
+        checked: isCheckable(node) ? isChecked(node) : undefined,
         options:
           node.tagName === "SELECT"
             ? Array.from(node.options).map((option) => ({
@@ -626,6 +649,11 @@
     return (
       node.getAttribute("aria-pressed") === "true" ||
       node.getAttribute("aria-selected") === "true" ||
+      // a chosen radio is a mutually-exclusive selection that's already applied —
+      // re-clicking it is a no-op, so flag it like any other active filter.
+      // (Checkboxes are independent toggles, so a checked one is NOT "active":
+      //  the model may legitimately want to uncheck it. Its state rides in `checked`.)
+      (isRadio(node) && isChecked(node)) ||
       (cur && cur !== "false") ||
       node.classList.contains("active") ||
       node.classList.contains("selected") ||
@@ -660,12 +688,40 @@
     return (
       node.getAttribute("aria-label") ||
       (node.innerText && node.innerText.trim()) ||
+      // A bare <input type=radio/checkbox> has no text of its own — its visible
+      // label is a associated <label> ("Hybrid", "EU region"). Pull that so the
+      // model can tell the options apart instead of seeing the raw value/name.
+      labelText(node) ||
       node.getAttribute("placeholder") ||
       node.value ||
       node.getAttribute("title") ||
       node.getAttribute("name") ||
       ""
     ).replace(/\s+/g, " ").trim();
+  }
+
+  // The text of a form control's associated <label>(s): covers both
+  // `<label for=id>` and a wrapping `<label>…<input></label>`, plus
+  // aria-labelledby. Empty for elements that aren't labelable.
+  function labelText(node) {
+    try {
+      if (node.labels && node.labels.length) {
+        return Array.from(node.labels)
+          .map((l) => (l.innerText || l.textContent || "").trim())
+          .filter(Boolean)
+          .join(" ");
+      }
+    } catch (_) { /* .labels not present on this element type */ }
+    const ref = node.getAttribute && node.getAttribute("aria-labelledby");
+    if (ref) {
+      const t = ref
+        .split(/\s+/)
+        .map((id) => (document.getElementById(id)?.innerText || "").trim())
+        .filter(Boolean)
+        .join(" ");
+      if (t) return t;
+    }
+    return "";
   }
 
   function findByAgentId(id) {
@@ -984,6 +1040,18 @@
     undoBtn.disabled = busy;
   }
 
+  // The radio currently selected in the same group as `node` (same name, same
+  // form), or null. Native radios only — that's what needs group-aware undo.
+  function checkedRadioInGroup(node) {
+    if (!(node.tagName === "INPUT" && node.type === "radio")) return null;
+    const name = node.name;
+    const scope = node.form || document;
+    for (const r of scope.querySelectorAll('input[type="radio"]')) {
+      if (r.name === name && r.checked) return r;
+    }
+    return null;
+  }
+
   function captureUndoEntry(action) {
     if (action.action === "scroll") {
       return { kind: "scroll", x: window.scrollX, y: window.scrollY };
@@ -997,7 +1065,18 @@
     if (action.action === "select" && node.tagName === "SELECT") {
       return { kind: "select", targetId, value: node.value };
     }
-    if (action.action === "click" && /^(checkbox|radio)$/i.test(node.type || "")) {
+    if (action.action === "click" && isRadio(node)) {
+      // Selecting a radio unchecks whichever sibling was on, so undoing it means
+      // re-selecting that sibling — merely unchecking the new one would leave the
+      // group with nothing chosen. Capture the currently-selected radio (if any).
+      const prev = checkedRadioInGroup(node);
+      if (prev && prev !== node) {
+        if (!prev.dataset.agentId) prev.dataset.agentId = String(++agentIdCounter);
+        return { kind: "radio", targetId: prev.dataset.agentId };
+      }
+      return { kind: "checked", targetId, checked: !!node.checked }; // nothing was selected before
+    }
+    if (action.action === "click" && /^checkbox$/i.test(node.type || "")) {
       return { kind: "checked", targetId, checked: !!node.checked };
     }
     if (action.action === "click") {
@@ -1060,6 +1139,10 @@
           node.checked = entry.checked;
           node.dispatchEvent(new Event("input", { bubbles: true }));
           node.dispatchEvent(new Event("change", { bubbles: true }));
+        } else if (entry.kind === "radio" && node) {
+          // Re-select the radio that was on before — a real click re-checks it,
+          // unchecks the group, and fires change so frameworks stay in sync.
+          realClick(node);
         } else if (entry.kind === "click" && node) {
           realClick(node);
         }

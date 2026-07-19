@@ -383,9 +383,10 @@ Each user turn includes two things:
     range and increment. If an element has min/max, it is a slider: use action_type "slider" on it, NEVER "type",
     even though its tag is "input". Always pick a value on-step within [min, max].
   - options: for native select dropdowns, the available option labels and values
+  - checked: present ONLY for radio buttons and checkboxes (type "radio"/"checkbox"). true = that option is currently selected. To choose a radio or toggle a checkbox, use action_type "click" on it (NOT "select" — that's only for native dropdowns). Never click a radio whose checked is already true; pick the right option by its "text"/"context" label. To change a radio selection, just click the option you want — the previously-selected one clears automatically.
   - context: the text of the surrounding card/row — this usually contains the price and product name tied to THIS element. Use it to pick the right button (e.g. the "Add to Cart" whose context shows "$999/mo").
   - href: destination for links
-  - active: true means this control (a filter, tab, or toggle) is ALREADY selected/applied. Do NOT click an active:true element again — it's done; move to the next step.
+  - active: true means this control (a filter, tab, toggle, or a selected radio) is ALREADY selected/applied. Do NOT click an active:true element again — it's done; move to the next step.
   - visible: whether it's currently in the viewport
 You can only ACT on elements present in pageElements. If what you need isn't there, scroll or navigate to find it, or ask the user.
 
