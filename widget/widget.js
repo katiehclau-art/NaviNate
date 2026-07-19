@@ -54,6 +54,7 @@
 
   // ---- session state (survives page navigations the agent triggers) --------
   const SS = window.sessionStorage;
+  const PENDING_UNDO_KEY = "navinate.pendingUndo";
   // The conversation (history + panel open state) persists across page loads for
   // the whole tab session, so the assistant never "resets" when the page changes —
   // whether the agent navigated, the user clicked a link, or a button redirected.
@@ -1106,6 +1107,57 @@
     renderUndo();
   }
 
+  function findUndoNode(entry) {
+    return entry.targetId ? findByAgentId(entry.targetId) : null;
+  }
+
+  function applyUndoEntry(entry) {
+    const node = findUndoNode(entry);
+    if (entry.kind === "scroll") {
+      window.scrollTo({ left: entry.x, top: entry.y, behavior: "smooth" });
+    } else if (entry.kind === "value" && node) {
+      setNativeValue(node, entry.value);
+    } else if (entry.kind === "select" && node) {
+      setNativeValue(node, entry.value);
+    } else if (entry.kind === "checked" && node) {
+      node.checked = entry.checked;
+      node.dispatchEvent(new Event("input", { bubbles: true }));
+      node.dispatchEvent(new Event("change", { bubbles: true }));
+    } else if (entry.kind === "radio" && node) {
+      // Re-select the radio that was on before — a real click re-checks it,
+      // unchecks the group, and fires change so frameworks stay in sync.
+      realClick(node);
+    } else if (entry.kind === "click" && node) {
+      realClick(node);
+    }
+  }
+
+  function recordUndoComplete(transaction) {
+    const shown = `Undid your last command: “${transaction.command}”`;
+    addBubble("assistant", shown);
+    // Phrased differently for the model than for the visitor, so pin the
+    // displayed wording or a reload would quietly reword it.
+    state.history.push({
+      role: "assistant",
+      content: `Undid the previous command: ${transaction.command}`,
+      label: shown,
+    });
+    persist();
+    track("command_undone", { message: transaction.command });
+    if (voice && voice.isActive()) voice.sendContext(describePageForVoice(), "page");
+  }
+
+  async function applyUndoTransaction(transaction) {
+    // If we just navigated back to the original page, the DOM is fresh and has not
+    // been scanned yet. Re-tag it so stored target ids line up with findByAgentId().
+    scanDom();
+    restoreAppUndoState(transaction.appState);
+    for (const entry of [...transaction.entries].reverse()) {
+      applyUndoEntry(entry);
+    }
+    recordUndoComplete(transaction);
+  }
+
   // Returns a short note describing what was reversed (the voice agent speaks it).
   async function undoLastCommand() {
     if (busy) return "I'm in the middle of something — give me a second.";
@@ -1118,47 +1170,12 @@
     persist();
     try {
       if (window.location.href !== transaction.startUrl) {
-        SS.setItem("navinate.undoNotice", `Undid: ${transaction.command}`);
-        if (transaction.appState != null) {
-          SS.setItem("navinate.undoAppState", JSON.stringify(transaction.appState));
-        }
+        SS.setItem(PENDING_UNDO_KEY, JSON.stringify(transaction));
         if (voice) voice.armHandoff();
         window.location.href = transaction.startUrl;
         return `Taking them back to the previous page to undo "${transaction.command}".`;
       }
-      restoreAppUndoState(transaction.appState);
-      for (const entry of [...transaction.entries].reverse()) {
-        const node = entry.targetId ? findByAgentId(entry.targetId) : null;
-        if (entry.kind === "scroll") {
-          window.scrollTo({ left: entry.x, top: entry.y, behavior: "smooth" });
-        } else if (entry.kind === "value" && node) {
-          setNativeValue(node, entry.value);
-        } else if (entry.kind === "select" && node) {
-          setNativeValue(node, entry.value);
-        } else if (entry.kind === "checked" && node) {
-          node.checked = entry.checked;
-          node.dispatchEvent(new Event("input", { bubbles: true }));
-          node.dispatchEvent(new Event("change", { bubbles: true }));
-        } else if (entry.kind === "radio" && node) {
-          // Re-select the radio that was on before — a real click re-checks it,
-          // unchecks the group, and fires change so frameworks stay in sync.
-          realClick(node);
-        } else if (entry.kind === "click" && node) {
-          realClick(node);
-        }
-      }
-      const shown = `Undid your last command: “${transaction.command}”`;
-      addBubble("assistant", shown);
-      // Phrased differently for the model than for the visitor, so pin the
-      // displayed wording or a reload would quietly reword it.
-      state.history.push({
-        role: "assistant",
-        content: `Undid the previous command: ${transaction.command}`,
-        label: shown,
-      });
-      persist();
-      track("command_undone", { message: transaction.command });
-      if (voice && voice.isActive()) voice.sendContext(describePageForVoice(), "page");
+      await applyUndoTransaction(transaction);
       return `Undone — reversed "${transaction.command}".`;
     } finally {
       busy = false;
@@ -2014,6 +2031,20 @@
     if (theme.enabled === false) return;
     if (Number.isFinite(theme.maxAutoSteps)) MAX_AUTO_STEPS = theme.maxAutoSteps;
     buildUI();
+    const pendingUndo = SS.getItem(PENDING_UNDO_KEY);
+    if (pendingUndo) {
+      try {
+        const transaction = JSON.parse(pendingUndo);
+        if (transaction && window.location.href === transaction.startUrl) {
+          SS.removeItem(PENDING_UNDO_KEY);
+          openPanel();
+          await sleep(250); // let host page scripts finish their own boot work
+          await applyUndoTransaction(transaction);
+        }
+      } catch (_) {
+        SS.removeItem(PENDING_UNDO_KEY);
+      }
+    }
     const pendingAppUndo = SS.getItem("navinate.undoAppState");
     if (pendingAppUndo) {
       SS.removeItem("navinate.undoAppState");
