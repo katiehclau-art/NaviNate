@@ -77,6 +77,40 @@ In the Base44 demo site's page `<head>` (or a Custom HTML block), paste:
 The widget reads it, themes itself from `/api/config`, and every action it takes is
 reported to `/api/analytics` so the dashboard charts move live.
 
+### Split hosting: widget on Base44, brain on your machine
+
+By default the widget calls whatever origin served it, which is right when the
+backend serves `widget.js` itself. To host the two **static** widget files on
+Base44 (or any CDN) while the agent backend stays local behind a tunnel, point the
+tag at the backend explicitly:
+
+```html
+<script src="https://your-app.base44.app/widget.js"
+        data-client-id="acme"
+        data-api="https://agent.example.com"></script>
+```
+
+| Attribute | Purpose |
+|---|---|
+| `data-api` | Base URL of the agent backend (your cloudflared/ngrok hostname). Falls back to the script's own origin. `?api=` on the src works too, for hosts that won't let you set attributes. |
+| `data-client-id` | Same as `?clientId=` — whichever is present wins. |
+| `data-voice-src` | Only if your host renames or relocates `widget-voice.js`. |
+
+Upload **both** `widget/widget.js` and `widget/voice.js` (as `widget-voice.js`,
+next to it). The voice module is resolved relative to `widget.js`, not to the API,
+so the browser fetches assets from Base44 and only API calls cross the tunnel:
+
+```
+Base44   →  widget.js, widget-voice.js
+tunnel   →  /config, /chat, /analytics, /voice/session, /voice/speak, /scrape
+```
+
+The backend already sends permissive CORS, so no extra setup is needed. Two things
+to watch: a **quick** cloudflared tunnel gets a new hostname every restart, which
+means editing the script tag each time — use a *named* tunnel for a stable URL. And
+the tunnel must be **https**, or the browser blocks the calls as mixed content and
+denies microphone access.
+
 ### 4. (Optional) Build the site map
 
 With the backend running (step 1), crawl the bundled multi-page demo site:

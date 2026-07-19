@@ -22,8 +22,35 @@
     document.currentScript ||
     document.querySelector('script[src*="widget.js"]');
   const srcUrl = new URL(self.src);
-  const BACKEND = srcUrl.origin; // e.g. https://abc123.ngrok.app
-  const CLIENT_ID = srcUrl.searchParams.get("clientId") || "demo";
+
+  // Where the agent brain lives. By default it's wherever this script came from,
+  // which is right when the backend serves widget.js itself. But the widget can
+  // also be hosted somewhere else entirely — Base44, a CDN, the client's own
+  // assets — while the brain stays on a laptop behind a tunnel. In that case
+  // point it explicitly:
+  //   <script src="https://cdn.example.com/widget.js"
+  //           data-client-id="acme"
+  //           data-api="https://agent.example.com"></script>
+  // `?api=` on the src works too, for hosts that won't let you add attributes.
+  const apiOverride =
+    self.getAttribute("data-api") ||
+    self.getAttribute("data-backend") ||
+    srcUrl.searchParams.get("api") ||
+    "";
+  const BACKEND = apiOverride ? apiOverride.replace(/\/$/, "") : srcUrl.origin;
+
+  const CLIENT_ID =
+    srcUrl.searchParams.get("clientId") ||
+    self.getAttribute("data-client-id") ||
+    "demo";
+
+  // The voice module is a sibling FILE, not an API call — it lives next to this
+  // script, wherever that is. Resolving it against our own src (rather than the
+  // backend) keeps split hosting working, and `data-voice-src` covers hosts that
+  // rename or relocate assets.
+  const VOICE_SRC =
+    self.getAttribute("data-voice-src") ||
+    new URL("widget-voice.js", srcUrl).href;
 
   // ---- session state (survives page navigations the agent triggers) --------
   const SS = window.sessionStorage;
@@ -1531,7 +1558,7 @@
     if (window.NaviNateVoice) return Promise.resolve(window.NaviNateVoice);
     if (voiceLoading) return voiceLoading;
     voiceLoading = new Promise((resolve, reject) => {
-      const s = el("script", { src: BACKEND + "/widget-voice.js", async: true });
+      const s = el("script", { src: VOICE_SRC, async: true });
       s.onload = () => (window.NaviNateVoice ? resolve(window.NaviNateVoice) : reject(new Error("voice module did not register")));
       s.onerror = () => reject(new Error("could not load the voice module"));
       document.head.appendChild(s);
@@ -1927,16 +1954,32 @@
     return `
     #navinate-root { all: initial; }
     #navinate-root, #navinate-root * { box-sizing: border-box; font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
-    #navinate-root { --nn-accent: #4f46e5; }
+    #navinate-root {
+      --nn-accent: #4f46e5;
+      /* Sky + liquid glass. Every surface is translucent white over a soft blue
+         wash, so the widget reads like glass catching daylight rather than a card
+         sitting on the page. The client's brand colour still drives the accents,
+         so this restyle doesn't cost them their identity. */
+      --nn-ink: #16354d;
+      --nn-ink-soft: #5b7893;
+      --nn-glass: rgba(255,255,255,.62);
+      --nn-glass-strong: rgba(255,255,255,.80);
+      --nn-edge: rgba(255,255,255,.85);
+      --nn-blur: saturate(170%) blur(22px);
+      --nn-lift: 0 18px 48px rgba(23,72,110,.20), 0 2px 8px rgba(23,72,110,.08);
+      /* the sheen that makes an accent-filled surface look like wet glass */
+      --nn-sheen: linear-gradient(140deg, rgba(255,255,255,.38), rgba(255,255,255,.06) 62%);
+    }
 
     .nn-launcher {
       position: fixed; right: 22px; bottom: 22px; z-index: 2147483000;
       width: 60px; height: 60px; border: none; cursor: pointer; padding: 0;
       background: transparent; color: #fff; font-size: 26px; line-height: 1;
       display: flex; align-items: center; justify-content: center;
-      transition: transform .15s ease;
+      transition: transform .18s cubic-bezier(.34,1.4,.5,1);
+      filter: drop-shadow(0 10px 22px rgba(23,90,140,.34));
     }
-    .nn-launcher:hover { transform: scale(1.06); }
+    .nn-launcher:hover { transform: translateY(-2px) scale(1.06); }
     .nn-hidden { display: none !important; }
 
     .nn-icon-img { display: block; object-fit: contain; border-radius: 8px; }
@@ -1958,31 +2001,65 @@
     #navinate-root.nn-left .nn-launcher,
     #navinate-root.nn-left .nn-panel { right: auto; left: 22px; }
 
+    /* The panel is a single pane of glass: a daylight highlight at the top left,
+       a wash of sky at the top right, and a bank of cloud resting at the bottom.
+       All of it lives in the background stack rather than in extra elements, so
+       nothing can stack on top of the transcript. */
     .nn-panel {
       position: fixed; right: 22px; bottom: 22px; z-index: 2147483000;
       width: 380px; max-width: calc(100vw - 32px); height: 560px; max-height: calc(100vh - 44px);
-      background: #fff; border-radius: 18px; overflow: hidden; display: none; flex-direction: column;
-      box-shadow: 0 24px 60px rgba(0,0,0,.28); border: 1px solid rgba(0,0,0,.06);
+      border-radius: 24px; overflow: hidden; display: none; flex-direction: column;
+      color: var(--nn-ink);
+      background:
+        radial-gradient(120% 78% at 10% -6%, rgba(255,255,255,.95) 0%, rgba(255,255,255,0) 58%),
+        radial-gradient(95% 55% at 104% 2%, rgba(168,215,246,.85) 0%, rgba(168,215,246,0) 62%),
+        radial-gradient(72% 42% at 22% 107%, rgba(255,255,255,.95) 0%, rgba(255,255,255,0) 72%),
+        radial-gradient(62% 38% at 78% 112%, rgba(255,255,255,.9) 0%, rgba(255,255,255,0) 72%),
+        linear-gradient(180deg, rgba(255,255,255,.80) 0%, rgba(223,241,254,.74) 100%);
+      backdrop-filter: var(--nn-blur); -webkit-backdrop-filter: var(--nn-blur);
+      border: 1px solid var(--nn-edge);
+      box-shadow: var(--nn-lift), inset 0 1px 0 rgba(255,255,255,.95);
     }
-    .nn-panel.nn-open { display: flex; animation: nn-pop .18s ease; }
-    @keyframes nn-pop { from { transform: translateY(12px) scale(.98); opacity: 0; } to { transform: none; opacity: 1; } }
+    .nn-panel.nn-open { display: flex; animation: nn-pop .22s cubic-bezier(.22,1.2,.4,1); }
+    @keyframes nn-pop { from { transform: translateY(14px) scale(.97); opacity: 0; } to { transform: none; opacity: 1; } }
 
     .nn-header {
-      background: var(--nn-accent); color: #fff; padding: 14px 16px;
+      background: var(--nn-sheen), var(--nn-accent);
+      color: #fff; padding: 14px 16px;
       display: flex; align-items: center; justify-content: space-between;
+      border-bottom: 1px solid rgba(255,255,255,.5);
+      box-shadow: 0 6px 20px rgba(23,72,110,.16), inset 0 1px 0 rgba(255,255,255,.55);
     }
-    .nn-title { font-weight: 600; font-size: 15px; display: flex; align-items: center; gap: 7px; }
+    .nn-title { font-weight: 600; font-size: 15px; display: flex; align-items: center; gap: 7px;
+      text-shadow: 0 1px 2px rgba(0,0,0,.12); }
     .nn-header-actions { display: flex; align-items: center; gap: 2px; }
-    .nn-min, .nn-reset { background: transparent; border: none; color: #fff; cursor: pointer; line-height: 1; padding: 0 6px; border-radius: 6px; }
+    .nn-min, .nn-reset { background: transparent; border: none; color: #fff; cursor: pointer; line-height: 1; padding: 0 6px; border-radius: 8px; }
     .nn-min { font-size: 24px; }
     .nn-reset { font-size: 17px; padding: 4px 7px; }
-    .nn-min:hover, .nn-reset:hover { background: rgba(255,255,255,.15); }
+    .nn-min:hover, .nn-reset:hover { background: rgba(255,255,255,.24); }
 
-    .nn-log { flex: 1; overflow-y: auto; padding: 16px; background: #f7f7fb; display: flex; flex-direction: column; gap: 10px; }
-    .nn-msg { max-width: 84%; padding: 10px 13px; border-radius: 14px; font-size: 14px; line-height: 1.45; white-space: pre-wrap; word-wrap: break-word; animation: nn-in .18s ease; }
+    /* transparent so the panel's own sky shows through the conversation */
+    .nn-log { flex: 1; overflow-y: auto; padding: 16px; background: transparent; display: flex; flex-direction: column; gap: 10px; }
+    .nn-log::-webkit-scrollbar { width: 8px; }
+    .nn-log::-webkit-scrollbar-track { background: transparent; }
+    .nn-log::-webkit-scrollbar-thumb { background: rgba(88,142,184,.28); border-radius: 8px; }
+    .nn-log::-webkit-scrollbar-thumb:hover { background: rgba(88,142,184,.45); }
+
+    .nn-msg { max-width: 84%; padding: 10px 13px; border-radius: 17px; font-size: 14px; line-height: 1.45; white-space: pre-wrap; word-wrap: break-word; animation: nn-in .2s ease; }
     @keyframes nn-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
-    .nn-user { align-self: flex-end; background: var(--nn-accent); color: #fff; border-bottom-right-radius: 4px; }
-    .nn-assistant { align-self: flex-start; background: #fff; color: #1a1a1a; border: 1px solid #ececf2; border-bottom-left-radius: 4px; white-space: normal; }
+    .nn-user {
+      align-self: flex-end; color: #fff; border-bottom-right-radius: 6px;
+      background: var(--nn-sheen), var(--nn-accent);
+      border: 1px solid rgba(255,255,255,.45);
+      box-shadow: 0 8px 20px rgba(23,72,110,.20), inset 0 1px 0 rgba(255,255,255,.5);
+    }
+    .nn-assistant {
+      align-self: flex-start; color: var(--nn-ink); border-bottom-left-radius: 6px; white-space: normal;
+      background: var(--nn-glass-strong);
+      backdrop-filter: saturate(150%) blur(14px); -webkit-backdrop-filter: saturate(150%) blur(14px);
+      border: 1px solid var(--nn-edge);
+      box-shadow: 0 8px 22px rgba(23,72,110,.13), inset 0 1px 0 rgba(255,255,255,.9);
+    }
 
     /* rendered markdown inside assistant bubbles */
     .nn-assistant > :first-child { margin-top: 0; }
@@ -1998,42 +2075,69 @@
     .nn-assistant a { color: var(--nn-accent); text-decoration: underline; word-break: break-word; }
     .nn-assistant strong { font-weight: 700; }
     .nn-assistant em { font-style: italic; }
-    .nn-assistant code { background: #f0f1f6; border-radius: 5px; padding: 1px 5px; font-size: 12.5px;
+    .nn-assistant code { background: rgba(255,255,255,.7); border: 1px solid rgba(255,255,255,.9);
+      border-radius: 6px; padding: 1px 5px; font-size: 12.5px; color: #12405f;
       font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace; }
-    .nn-assistant pre { background: #0f1526; color: #e6e9f2; border-radius: 10px; padding: 11px 13px;
-      overflow-x: auto; margin: 8px 0; }
-    .nn-assistant pre code { background: none; color: inherit; padding: 0; font-size: 12.5px; }
-    .nn-assistant blockquote { margin: 8px 0; padding: 4px 12px; border-left: 3px solid #d7dbe8; color: #55607a; }
+    .nn-assistant pre { background: rgba(14,42,64,.92); color: #e7f3fb; border-radius: 12px; padding: 11px 13px;
+      overflow-x: auto; margin: 8px 0; border: 1px solid rgba(255,255,255,.16); }
+    .nn-assistant pre code { background: none; border: none; color: inherit; padding: 0; font-size: 12.5px; }
+    .nn-assistant blockquote { margin: 8px 0; padding: 4px 12px; border-left: 3px solid rgba(122,183,225,.75); color: var(--nn-ink-soft); }
 
-    .nn-status { padding: 6px 16px; font-size: 12.5px; color: #6b6b7b; background: #f7f7fb; display: none; font-style: italic; }
+    .nn-status { padding: 6px 16px; font-size: 12.5px; color: var(--nn-ink-soft); background: transparent; display: none; font-style: italic; }
 
-    .nn-undo-row { display: none; justify-content: flex-end; padding: 7px 12px; background: #f7f7fb; border-top: 1px solid #eceef5; }
+    .nn-undo-row { display: none; justify-content: flex-end; padding: 7px 12px; background: transparent; border-top: 1px solid rgba(255,255,255,.6); }
     .nn-undo {
-      border: 1px solid #d9ddea; background: #fff; color: #4d556b; border-radius: 9px;
-      padding: 6px 10px; font-size: 12.5px; font-weight: 600; cursor: pointer;
-      transition: border-color .12s ease, color .12s ease, background .12s ease;
+      border: 1px solid var(--nn-edge); background: var(--nn-glass); color: var(--nn-ink);
+      backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+      border-radius: 11px; padding: 6px 11px; font-size: 12.5px; font-weight: 600; cursor: pointer;
+      box-shadow: 0 4px 12px rgba(23,72,110,.10);
+      transition: border-color .12s ease, color .12s ease, background .12s ease, transform .12s ease;
     }
-    .nn-undo:hover { border-color: var(--nn-accent); color: var(--nn-accent); background: #f8f9ff; }
+    .nn-undo:hover { color: var(--nn-accent); background: rgba(255,255,255,.85); transform: translateY(-1px); }
     .nn-undo:disabled { opacity: .5; cursor: default; }
 
-    .nn-inputbar { display: flex; gap: 8px; padding: 12px; background: #fff; border-top: 1px solid #eee; }
-    .nn-input { flex: 1; border: 1px solid #dcdce6; border-radius: 12px; padding: 11px 13px; font-size: 14px; outline: none; }
-    .nn-input:focus { border-color: var(--nn-accent); }
-    .nn-send { border: none; background: var(--nn-accent); color: #fff; border-radius: 12px; width: 44px; font-size: 16px; cursor: pointer; }
+    .nn-inputbar {
+      display: flex; gap: 8px; padding: 12px; align-items: center;
+      background: linear-gradient(180deg, rgba(255,255,255,.30), rgba(255,255,255,.62));
+      border-top: 1px solid rgba(255,255,255,.7);
+      backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
+    }
+    .nn-input {
+      flex: 1; border: 1px solid var(--nn-edge); border-radius: 14px; padding: 11px 14px;
+      font-size: 14px; outline: none; color: var(--nn-ink);
+      background: rgba(255,255,255,.66);
+      box-shadow: inset 0 1px 3px rgba(23,72,110,.08);
+      transition: border-color .14s ease, box-shadow .14s ease, background .14s ease;
+    }
+    .nn-input::placeholder { color: rgba(91,120,147,.75); }
+    .nn-input:focus {
+      background: rgba(255,255,255,.9); border-color: rgba(255,255,255,1);
+      box-shadow: inset 0 1px 3px rgba(23,72,110,.06), 0 0 0 3px rgba(122,183,225,.35);
+    }
+    .nn-send {
+      border: 1px solid rgba(255,255,255,.45); color: #fff; border-radius: 14px; width: 44px; height: 42px;
+      font-size: 16px; cursor: pointer; flex: none;
+      background: var(--nn-sheen), var(--nn-accent);
+      box-shadow: 0 6px 16px rgba(23,72,110,.24), inset 0 1px 0 rgba(255,255,255,.5);
+      transition: transform .12s ease, filter .12s ease;
+    }
+    .nn-send:hover { transform: translateY(-1px); filter: brightness(1.06); }
 
     /* voice: the mic sits left of the input and pulses while the line is open */
     .nn-mic {
-      border: 1px solid #dcdce6; background: #fff; border-radius: 12px; width: 44px;
-      font-size: 16px; cursor: pointer; line-height: 1; flex: none;
-      transition: background .15s ease, border-color .15s ease, box-shadow .15s ease;
+      border: 1px solid var(--nn-edge); background: rgba(255,255,255,.66); border-radius: 14px;
+      width: 44px; height: 42px; font-size: 16px; cursor: pointer; line-height: 1; flex: none;
+      color: var(--nn-ink);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.9), 0 3px 10px rgba(23,72,110,.10);
+      transition: background .15s ease, border-color .15s ease, box-shadow .15s ease, transform .12s ease;
     }
-    .nn-mic:hover { border-color: var(--nn-accent); background: #f5f7ff; }
-    .nn-mic-live { background: var(--nn-accent); border-color: var(--nn-accent); }
+    .nn-mic:hover { background: rgba(255,255,255,.92); transform: translateY(-1px); }
+    .nn-mic-live { background: var(--nn-sheen), var(--nn-accent); border-color: rgba(255,255,255,.45); }
     .nn-mic-hot { animation: nn-mic-pulse 1.9s ease-in-out infinite; }
     .nn-mic-speaking { animation: nn-mic-talk .7s ease-in-out infinite; }
     @keyframes nn-mic-pulse {
-      0%, 100% { box-shadow: 0 0 0 0 rgba(79,70,229,.45); }
-      50% { box-shadow: 0 0 0 7px rgba(79,70,229,0); }
+      0%, 100% { box-shadow: 0 0 0 0 rgba(122,183,225,.75); }
+      50% { box-shadow: 0 0 0 8px rgba(122,183,225,0); }
     }
     @keyframes nn-mic-talk { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.09); } }
 
@@ -2041,25 +2145,26 @@
        line, not a message, so it reads as something the agent did rather than
        something either party said */
     .nn-task {
-      align-self: stretch; background: transparent; color: #6a7183; border: none;
+      align-self: stretch; background: transparent; color: var(--nn-ink-soft); border: none;
       font-size: 12.5px; font-weight: 500; max-width: 100%; padding: 2px 2px 2px 0;
       display: flex; align-items: baseline; gap: 7px; white-space: normal;
     }
     .nn-task::before {
       content: ""; flex: none; width: 6px; height: 6px; border-radius: 50%;
       background: var(--nn-accent); transform: translateY(-1px);
+      box-shadow: 0 0 8px rgba(122,183,225,.9);
     }
     .nn-task-live::before { animation: nn-task-pulse 1.4s ease-in-out infinite; }
-    .nn-task-live { color: #55607a; }
+    .nn-task-live { color: var(--nn-ink); }
     .nn-task-done::before {
-      content: "✓"; width: auto; height: auto; background: none;
+      content: "✓"; width: auto; height: auto; background: none; box-shadow: none;
       color: var(--nn-accent); font-weight: 700; font-size: 12px; transform: none;
     }
     .nn-task-stuck::before {
-      content: "•"; width: auto; height: auto; background: none;
-      color: #b9bfd0; font-weight: 700; transform: none;
+      content: "•"; width: auto; height: auto; background: none; box-shadow: none;
+      color: #a9bccb; font-weight: 700; transform: none;
     }
-    .nn-task-stuck { color: #98a0b3; }
+    .nn-task-stuck { color: #8ba0b3; }
     @keyframes nn-task-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .25; } }
 
     /* ---- voice mode: a bare stage floating over the site, bottom centre ----
@@ -2081,32 +2186,41 @@
     /* Captions carry their own contrast chip — they have to stay readable on top
        of whatever the client's page looks like, which we can't predict. */
     .nn-vcaption {
-      max-width: 100%; text-align: center; font-size: 14px; line-height: 1.45; color: #fff;
-      background: rgba(16,18,27,.76); backdrop-filter: blur(7px); -webkit-backdrop-filter: blur(7px);
-      padding: 9px 14px; border-radius: 13px; box-shadow: 0 6px 22px rgba(0,0,0,.22);
+      max-width: 100%; text-align: center; font-size: 14px; line-height: 1.45; color: var(--nn-ink);
+      background: linear-gradient(180deg, rgba(255,255,255,.88), rgba(232,245,254,.82));
+      backdrop-filter: saturate(170%) blur(16px); -webkit-backdrop-filter: saturate(170%) blur(16px);
+      padding: 10px 15px; border-radius: 16px; border: 1px solid var(--nn-edge);
+      box-shadow: 0 10px 30px rgba(23,72,110,.22), inset 0 1px 0 rgba(255,255,255,.95);
       animation: nn-cap-in .22s ease; max-height: 96px; overflow: hidden;
     }
     .nn-vcaption:empty { display: none; }
-    .nn-vcaption-user { color: #c9cede; font-style: italic; }
-    .nn-vcaption-hint { color: #b9bfd0; font-size: 13px; }
+    .nn-vcaption-user { color: var(--nn-ink-soft); font-style: italic; }
+    .nn-vcaption-hint { color: var(--nn-ink-soft); font-size: 13px; }
     @keyframes nn-cap-in { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: none; } }
 
+    /* the visualiser as a luminous cloud-drop: a soft daylight halo, a thin ring
+       of sky, and a glassy pearl core lit from the top-left like the references */
     .nn-orb { position: relative; width: 116px; height: 116px; }
     .nn-orb span { position: absolute; top: 50%; left: 50%; border-radius: 50%; }
     .nn-orb-halo {
-      width: 116px; height: 116px; filter: blur(3px);
-      background: radial-gradient(circle, var(--nn-accent) 0%, transparent 68%);
-      opacity: var(--nn-glow, .25); transform: translate(-50%, -50%) scale(var(--nn-out, 1));
+      width: 124px; height: 124px; filter: blur(4px);
+      background: radial-gradient(circle, rgba(160,210,244,.95) 0%, rgba(122,183,225,.35) 42%, transparent 70%);
+      opacity: var(--nn-glow, .3); transform: translate(-50%, -50%) scale(var(--nn-out, 1));
       transition: opacity .1s linear;
     }
     .nn-orb-ring {
-      width: 82px; height: 82px; border: 2px solid var(--nn-accent); opacity: .3;
+      width: 86px; height: 86px; border: 1.5px solid rgba(255,255,255,.85); opacity: .55;
+      box-shadow: 0 0 18px rgba(160,210,244,.6);
       transform: translate(-50%, -50%) scale(var(--nn-out, 1));
     }
     .nn-orb-core {
-      width: 60px; height: 60px; transform: translate(-50%, -50%) scale(var(--nn-in, 1));
-      background: radial-gradient(circle at 38% 32%, #fff 2%, var(--nn-accent) 62%);
-      box-shadow: 0 10px 26px rgba(0,0,0,.28), inset 0 -6px 13px rgba(0,0,0,.14);
+      width: 64px; height: 64px; transform: translate(-50%, -50%) scale(var(--nn-in, 1));
+      background:
+        radial-gradient(circle at 36% 28%, #ffffff 0%, rgba(255,255,255,.85) 16%, transparent 42%),
+        radial-gradient(circle at 62% 74%, rgba(150,204,242,.95) 0%, transparent 58%),
+        linear-gradient(150deg, #eaf6ff 0%, var(--nn-accent) 128%);
+      border: 1px solid rgba(255,255,255,.8);
+      box-shadow: 0 14px 30px rgba(23,72,110,.30), inset 0 -8px 16px rgba(60,110,150,.28), inset 0 6px 12px rgba(255,255,255,.9);
     }
     /* nobody talking: a slow breath, so it reads as listening rather than frozen */
     .nn-orb-quiet .nn-orb-core { animation: nn-breathe 3.6s ease-in-out infinite; }
@@ -2118,7 +2232,7 @@
        rotate(), which would drop the translate(-50%,-50%) and fling the ring
        off centre. (No backticks in here — this CSS is a JS template literal.) */
     .nn-orb-working .nn-orb-ring {
-      opacity: .85; border-color: rgba(0,0,0,.08); border-top-color: var(--nn-accent);
+      opacity: .9; border-color: rgba(255,255,255,.35); border-top-color: #fff;
       animation: nn-orb-spin 1s linear infinite;
     }
     @keyframes nn-orb-spin {
@@ -2129,58 +2243,65 @@
 
     /* also chipped, for the same reason as the captions */
     .nn-vstate {
-      font-size: 11.5px; color: #fff; background: rgba(16,18,27,.6);
-      backdrop-filter: blur(6px); -webkit-backdrop-filter: blur(6px);
-      padding: 3px 10px; border-radius: 9px; letter-spacing: .01em;
+      font-size: 11.5px; color: var(--nn-ink); background: rgba(255,255,255,.78);
+      border: 1px solid var(--nn-edge);
+      backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+      padding: 3px 11px; border-radius: 10px; letter-spacing: .01em;
+      box-shadow: 0 4px 14px rgba(23,72,110,.14);
     }
     .nn-vstate:empty { display: none; }
 
     .nn-vcontrols { display: flex; gap: 10px; align-items: center; }
     .nn-vcontrols button {
-      width: 42px; height: 42px; border-radius: 50%; border: 1px solid rgba(0,0,0,.08); background: #fff;
+      width: 42px; height: 42px; border-radius: 50%; border: 1px solid var(--nn-edge);
+      background: var(--nn-glass-strong); color: var(--nn-ink);
+      backdrop-filter: saturate(160%) blur(14px); -webkit-backdrop-filter: saturate(160%) blur(14px);
       font-size: 16px; line-height: 1; cursor: pointer; display: grid; place-items: center;
-      box-shadow: 0 5px 18px rgba(0,0,0,.22);
+      box-shadow: 0 6px 20px rgba(23,72,110,.20), inset 0 1px 0 rgba(255,255,255,.9);
       transition: transform .12s ease, background .12s ease, border-color .12s ease;
     }
-    .nn-vcontrols button:hover { transform: translateY(-1px); border-color: var(--nn-accent); }
+    .nn-vcontrols button:hover { transform: translateY(-1px); background: rgba(255,255,255,.95); }
     /* these need the parent in the selector: ".nn-vcontrols button" is more
        specific than a lone class, so a bare .nn-vend loses and renders white */
     .nn-vcontrols .nn-vkeyboard { font-size: 15px; }
-    .nn-vcontrols .nn-vmic-off { background: #fdeceb; border-color: #f0b4b0; }
+    .nn-vcontrols .nn-vmic-off { background: rgba(255,236,235,.9); border-color: rgba(240,180,176,.9); }
     .nn-vcontrols .nn-vend {
-      background: var(--nn-accent); border-color: var(--nn-accent); color: #fff; font-size: 15px;
+      background: var(--nn-sheen), var(--nn-accent); border-color: rgba(255,255,255,.45); color: #fff; font-size: 15px;
     }
     .nn-vcontrols .nn-vend:hover { filter: brightness(1.08); }
     /* the call is still up while the panel is minimised to watch the cursor */
     .nn-launcher-live { animation: nn-mic-pulse 1.9s ease-in-out infinite; }
 
     /* suggested-prompt starter chips */
-    .nn-suggestions { display: flex; flex-wrap: wrap; gap: 7px; padding: 0 12px 4px; background: #fff; }
+    .nn-suggestions { display: flex; flex-wrap: wrap; gap: 7px; padding: 0 12px 4px; background: transparent; }
     .nn-chip {
-      border: 1px solid var(--nn-accent); background: #fff; color: var(--nn-accent);
-      border-radius: 16px; padding: 6px 12px; font-size: 12.5px; cursor: pointer; line-height: 1.2;
-      transition: background .12s ease, color .12s ease;
+      border: 1px solid var(--nn-edge); background: rgba(255,255,255,.66); color: var(--nn-accent);
+      backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+      border-radius: 16px; padding: 6px 12px; font-size: 12.5px; cursor: pointer; line-height: 1.2; font-weight: 600;
+      box-shadow: 0 3px 10px rgba(23,72,110,.10);
+      transition: background .12s ease, color .12s ease, transform .12s ease;
     }
-    .nn-chip:hover { background: var(--nn-accent); color: #fff; }
+    .nn-chip:hover { background: var(--nn-sheen), var(--nn-accent); color: #fff; border-color: rgba(255,255,255,.45); transform: translateY(-1px); }
 
     /* thumbs-up/down feedback under an answer */
     .nn-feedback { display: flex; gap: 6px; margin-top: 8px; align-items: center; }
     .nn-fb-btn {
-      border: 1px solid #e2e4ee; background: #fff; border-radius: 8px; padding: 2px 8px;
+      border: 1px solid var(--nn-edge); background: rgba(255,255,255,.6); border-radius: 10px; padding: 2px 8px;
       font-size: 14px; cursor: pointer; line-height: 1.4;
+      transition: border-color .12s ease, background .12s ease;
     }
-    .nn-fb-btn:hover { border-color: var(--nn-accent); background: #f5f7ff; }
-    .nn-fb-thanks { font-size: 12px; color: #6b6b7b; font-style: italic; }
+    .nn-fb-btn:hover { border-color: rgba(122,183,225,.9); background: rgba(255,255,255,.9); }
+    .nn-fb-thanks { font-size: 12px; color: var(--nn-ink-soft); font-style: italic; }
 
     /* read-aloud transport: 🔊 → spinner → ⏸ → ▶ all in one button, so a fixed
        width keeps the row from twitching as the glyph changes */
     .nn-fb-speak { min-width: 30px; text-align: center; padding: 2px 6px; }
     .nn-fb-loading, .nn-fb-playing, .nn-fb-paused {
-      border-color: var(--nn-accent); background: #f5f7ff; color: var(--nn-accent);
+      border-color: rgba(122,183,225,.9); background: rgba(232,245,254,.85); color: var(--nn-accent);
     }
     .nn-spin {
       display: inline-block; width: 11px; height: 11px; vertical-align: -1px;
-      border: 2px solid rgba(79,70,229,.25); border-top-color: var(--nn-accent);
+      border: 2px solid rgba(122,183,225,.35); border-top-color: var(--nn-accent);
       border-radius: 50%; animation: nn-spin .6s linear infinite;
     }
     @keyframes nn-spin { to { transform: rotate(360deg); } }
@@ -2195,15 +2316,19 @@
     .nn-cursor-click { animation: nn-tap .18s ease; }
     .nn-cursor-caption {
       position: absolute; left: 18px; top: 28px; width: max-content; max-width: 230px;
-      padding: 7px 10px; border-radius: 9px; background: #151722; color: #fff;
+      padding: 8px 11px; border-radius: 11px;
+      background: linear-gradient(180deg, rgba(255,255,255,.92), rgba(232,245,254,.86));
+      backdrop-filter: saturate(170%) blur(14px); -webkit-backdrop-filter: saturate(170%) blur(14px);
+      border: 1px solid var(--nn-edge); color: var(--nn-ink);
       font-size: 12px; font-weight: 500; line-height: 1.35; letter-spacing: 0;
-      box-shadow: 0 5px 16px rgba(0,0,0,.24); filter: none;
+      box-shadow: 0 8px 22px rgba(23,72,110,.24); filter: none;
       opacity: 0; transform: translateY(-3px) scale(.96); transform-origin: top left;
       transition: opacity .16s ease, transform .16s ease;
     }
     .nn-cursor-caption::before {
-      content: ""; position: absolute; left: 5px; top: -5px; width: 10px; height: 10px;
-      background: #151722; transform: rotate(45deg);
+      content: ""; position: absolute; left: 6px; top: -5px; width: 10px; height: 10px;
+      background: rgba(246,251,255,.92); border-left: 1px solid var(--nn-edge); border-top: 1px solid var(--nn-edge);
+      transform: rotate(45deg);
     }
     .nn-cursor-caption.nn-caption-visible { opacity: 1; transform: none; }
     .nn-cursor-left .nn-cursor-caption { left: auto; right: 14px; transform-origin: top right; }
@@ -2214,8 +2339,9 @@
     @keyframes nn-tap { 0% { transform-origin: 0 0; } 50% { filter: drop-shadow(0 0 0 rgba(0,0,0,0)) brightness(1.4); } }
 
     .nn-ring {
-      position: fixed; z-index: 2147483500; pointer-events: none; border-radius: 8px;
-      border: 3px solid var(--nn-accent); box-shadow: 0 0 0 4px rgba(79,70,229,.18);
+      position: fixed; z-index: 2147483500; pointer-events: none; border-radius: 10px;
+      border: 2px solid rgba(255,255,255,.9);
+      box-shadow: 0 0 0 3px rgba(122,183,225,.45), 0 0 22px rgba(122,183,225,.7);
       animation: nn-ring .5s ease; transition: all .2s ease;
     }
     @keyframes nn-ring { from { transform: scale(1.15); opacity: 0; } to { transform: scale(1); opacity: 1; } }
