@@ -4,8 +4,28 @@
 // can trigger a rescan from the Base44 dashboard). Renders JS with Puppeteer so
 // it works on SPA sites, follows internal links, and returns { url: description }.
 
-import puppeteer from "puppeteer";
 import * as cheerio from "cheerio";
+
+// Locally (and on hosts with a normal disk) `puppeteer` downloads and bundles a
+// full Chromium at install time — too big for a Vercel function. On Vercel we
+// instead use puppeteer-core (no bundled browser) pointed at the Chromium build
+// @sparticuz/chromium ships specifically for Lambda/Vercel-style environments.
+async function launchBrowser() {
+  if (process.env.VERCEL) {
+    const chromium = (await import("@sparticuz/chromium")).default;
+    const { default: puppeteer } = await import("puppeteer-core");
+    return puppeteer.launch({
+      args: chromium.args,
+      executablePath: await chromium.executablePath(),
+      headless: chromium.headless,
+    });
+  }
+  const { default: puppeteer } = await import("puppeteer");
+  return puppeteer.launch({
+    headless: "new",
+    args: ["--no-sandbox", "--disable-setuid-sandbox"],
+  });
+}
 
 // Pull a human description of a page from its title / h1 / meta description.
 // Titles, h1s, and meta descriptions on real sites overlap heavily (and usually
@@ -58,10 +78,7 @@ export async function crawl({ startUrl, maxPages = 40, maxDepth = 3, onProgress,
     }
   };
 
-  const browser = await puppeteer.launch({
-    headless: "new",
-    args: ["--no-sandbox", "--disable-setuid-sandbox"],
-  });
+  const browser = await launchBrowser();
   try {
     const page = await browser.newPage();
     await page.setViewport({ width: 1280, height: 900 });

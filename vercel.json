@@ -1,0 +1,10 @@
+{
+  "functions": {
+    "api/index.js": {
+      "memory": 3009,
+      "maxDuration": 300,
+      "includeFiles": "{server/public/**,widget/**,scraper/*.js}"
+    }
+  },
+  "rewrites": [{ "source": "/(.*)", "destination": "/api/index.js" }]
+}

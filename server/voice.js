@@ -24,6 +24,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { kvGetOrUndefined, kvSet, usingKV } from "./store.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -237,15 +238,25 @@ Say so plainly and offer the nearest real alternative you can see on the page. N
 // instead of orphaning it.
 // ---------------------------------------------------------------------------
 const REGISTRY = path.join(__dirname, "voice-agents.json");
+const REGISTRY_KV_KEY = "voice-agents";
 
-function readRegistry() {
+// On Vercel the filesystem is read-only outside /tmp and /tmp doesn't survive
+// between invocations, so a plain fs cache would re-provision an ElevenLabs
+// agent on every cold start. Same KV store the sitemap uses (see store.js)
+// keeps this working across instances; everywhere else it's still the file.
+async function readRegistry() {
+  if (usingKV) return (await kvGetOrUndefined(REGISTRY_KV_KEY)) || {};
   try {
     return JSON.parse(fs.readFileSync(REGISTRY, "utf8"));
   } catch {
     return {};
   }
 }
-function writeRegistry(reg) {
+async function writeRegistry(reg) {
+  if (usingKV) {
+    await kvSet(REGISTRY_KV_KEY, reg);
+    return;
+  }
   try {
     fs.writeFileSync(REGISTRY, JSON.stringify(reg, null, 2));
   } catch (err) {
@@ -360,7 +371,7 @@ export async function ensureAgent(clientId, config) {
   if (SHARED_AGENT_ID) return SHARED_AGENT_ID;
 
   const key = clientId || "_default";
-  const reg = readRegistry();
+  const reg = await readRegistry();
   const entry = reg[key];
   const voiceId = config.voiceId || (await resolveDefaultVoice());
   const fp = fingerprint(config, voiceId);
@@ -386,7 +397,7 @@ export async function ensureAgent(clientId, config) {
   }
 
   reg[key] = { agentId, fingerprint: fp, updatedAt: new Date().toISOString() };
-  writeRegistry(reg);
+  await writeRegistry(reg);
   return agentId;
 }
 

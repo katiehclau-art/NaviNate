@@ -15,6 +15,8 @@ import path from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { ensureAgent, resolveDefaultVoice, signedUrl, speak, voiceConfigured, voiceDefaults } from "./voice.js";
+import { kvGetOrUndefined, kvSet, usingKV } from "./store.js";
+import { waitUntil } from "@vercel/functions";
 
 dotenv.config();
 
@@ -158,20 +160,43 @@ function sendAnalytics(clientId, payload) {
 // `node scrape.js <that client's URL> --client <clientId>`). We load the map that
 // matches the request's clientId, falling back to the shared sitemap.json (the
 // local demo / single-tenant setups).
-function loadSiteMap(clientId) {
+function sitemapKvKeys(clientId) {
+  const safeId = safeClientId(clientId);
+  return safeId ? [`sitemap:${safeId}`, "sitemap:default"] : ["sitemap:default"];
+}
+
+// KV records are { map, updatedAt } (updatedAt has no fs-mtime equivalent to
+// fall back on); fs stays a bare { url: description } map for compatibility
+// with scraper/scrape.js, which writes straight to disk and knows nothing
+// about KV.
+async function readSitemapRecord(clientId) {
+  if (usingKV) {
+    for (const key of sitemapKvKeys(clientId)) {
+      const rec = await kvGetOrUndefined(key);
+      if (rec && rec.map) return rec;
+    }
+    return null;
+  }
   const scraperDir = path.join(__dirname, "..", "scraper");
-  const safeId = String(clientId || "").replace(/[^a-zA-Z0-9_-]/g, ""); // no path traversal
+  const safeId = safeClientId(clientId);
   const candidates = [];
   if (safeId) candidates.push(path.join(scraperDir, "sitemaps", `${safeId}.json`));
   candidates.push(path.join(scraperDir, "sitemap.json"));
   for (const p of candidates) {
     try {
-      if (fs.existsSync(p)) return JSON.parse(fs.readFileSync(p, "utf8"));
+      if (fs.existsSync(p)) {
+        return { map: JSON.parse(fs.readFileSync(p, "utf8")), updatedAt: fs.statSync(p).mtime.toISOString() };
+      }
     } catch (err) {
       console.warn(`could not load ${path.basename(p)}:`, err.message);
     }
   }
   return null;
+}
+
+async function loadSiteMap(clientId) {
+  const rec = await readSitemapRecord(clientId);
+  return rec ? rec.map : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -207,31 +232,47 @@ function sitemapToList(map) {
 // `urls` is the full list of pages the agent currently knows about — the same set
 // that gets injected into its system prompt, so the client can see exactly what
 // their assistant can reach.
-function savedSitemapInfo(clientId) {
-  try {
-    const p = sitemapPath(clientId);
-    if (!fs.existsSync(p)) return { exists: false, pages: 0, updatedAt: null, urls: [] };
-    const map = JSON.parse(fs.readFileSync(p, "utf8"));
-    return {
-      exists: true,
-      pages: Object.keys(map).length,
-      updatedAt: fs.statSync(p).mtime.toISOString(),
-      urls: sitemapToList(map),
-    };
-  } catch {
-    return { exists: false, pages: 0, updatedAt: null, urls: [] };
-  }
+async function savedSitemapInfo(clientId) {
+  const rec = await readSitemapRecord(clientId);
+  if (!rec) return { exists: false, pages: 0, updatedAt: null, urls: [] };
+  return {
+    exists: true,
+    pages: Object.keys(rec.map).length,
+    updatedAt: rec.updatedAt,
+    urls: sitemapToList(rec.map),
+  };
 }
 
-function scrapeStatus(clientId) {
-  const job = scrapeJobs.get(clientId) || { state: "idle" };
-  return { ...job, sitemap: savedSitemapInfo(clientId) };
+// Job status also has to survive the request that started it: on Vercel a
+// later poll of GET /scrape/status can land on a different instance than the
+// one running the crawl, which wouldn't see the in-memory scrapeJobs Map at
+// all. `scrapeJobKey` gets its own KV entry, kept in sync at every job.* change
+// alongside the in-memory copy (which is all local/non-Vercel hosts use).
+function scrapeJobKey(clientId) {
+  return `scrapejob:${safeClientId(clientId) || "default"}`;
+}
+async function persistJob(clientId, job) {
+  scrapeJobs.set(clientId, job);
+  if (usingKV) await kvSet(scrapeJobKey(clientId), job);
+}
+async function readJob(clientId) {
+  if (scrapeJobs.has(clientId)) return scrapeJobs.get(clientId);
+  if (usingKV) {
+    const job = await kvGetOrUndefined(scrapeJobKey(clientId));
+    if (job) return job;
+  }
+  return null;
+}
+
+async function scrapeStatus(clientId) {
+  const job = (await readJob(clientId)) || { state: "idle" };
+  return { ...job, sitemap: await savedSitemapInfo(clientId) };
 }
 
 // Kick off a crawl for a client (unless one is already running). Runs async and
 // updates scrapeJobs as it goes; writes the sitemap when done. Returns the status.
 async function startScrape(clientId, startUrl) {
-  const existing = scrapeJobs.get(clientId);
+  const existing = await readJob(clientId);
   if (existing && existing.state === "running") return scrapeStatus(clientId);
 
   // `found` fills in as the crawl walks the site, so the dashboard can list pages
@@ -245,11 +286,14 @@ async function startScrape(clientId, startUrl) {
     error: null,
     found: [],
   };
-  scrapeJobs.set(clientId, job);
+  await persistJob(clientId, job);
 
   // Import Puppeteer lazily so the server still boots if scraper deps aren't
   // installed — the error only surfaces when someone actually triggers a scrape.
-  (async () => {
+  // Wrapped in waitUntil: on Vercel, the function would otherwise be frozen the
+  // instant the /scrape response is sent, killing the crawl mid-flight. Locally
+  // (and on any other host) waitUntil just runs the promise as before.
+  const work = (async () => {
     try {
       const { crawl } = await import("../scraper/crawl.js");
       const siteMap = await crawl({
@@ -265,16 +309,22 @@ async function startScrape(clientId, startUrl) {
               error: error || null,
             });
           }
+          persistJob(clientId, job);
         },
       });
-      const p = sitemapPath(clientId);
-      fs.mkdirSync(path.dirname(p), { recursive: true });
-      fs.writeFileSync(p, JSON.stringify(siteMap, null, 2));
+      if (usingKV) {
+        await kvSet(sitemapKvKeys(clientId)[0], { map: siteMap, updatedAt: new Date().toISOString() });
+      } else {
+        const p = sitemapPath(clientId);
+        fs.mkdirSync(path.dirname(p), { recursive: true });
+        fs.writeFileSync(p, JSON.stringify(siteMap, null, 2));
+      }
       const urls = sitemapToList(siteMap);
       job.pages = urls.length;
       job.found = urls; // settle on the saved map (drops pages that errored out)
       job.state = "done";
       job.finishedAt = new Date().toISOString();
+      await persistJob(clientId, job);
       console.log(`🕸  scrape for "${clientId}" done — ${job.pages} pages`);
       // Push the result to Base44 too, so the dashboard can record what the
       // agent learned without having to be open and polling at the time.
@@ -288,10 +338,12 @@ async function startScrape(clientId, startUrl) {
       job.state = "error";
       job.error = String(err.message || err).slice(0, 300);
       job.finishedAt = new Date().toISOString();
+      await persistJob(clientId, job);
       console.warn(`scrape for "${clientId}" failed:`, job.error);
       sendAnalytics(clientId, { event: "scrape_failed", reason: job.error, url: startUrl });
     }
   })();
+  waitUntil(work);
 
   return scrapeStatus(clientId);
 }
@@ -352,8 +404,8 @@ const BROWSER_ACTION_TOOL = {
   },
 };
 
-function buildSystemPrompt(config, clientId) {
-  const siteMap = loadSiteMap(clientId);
+async function buildSystemPrompt(config, clientId) {
+  const siteMap = await loadSiteMap(clientId);
   const siteMapBlock = siteMap
     ? `\n\nKNOWN SITE MAP (url -> description) — use "navigate" to jump straight to the right page when the user's goal clearly lives elsewhere:\n${JSON.stringify(
         siteMap
@@ -426,8 +478,8 @@ WHEN TO STOP (important — avoid loops):
 // the current user turn (message + live DOM snapshot). We deliberately keep history as
 // plain text (no tool_call blocks) so every request is self-contained and valid — the
 // live pageElements carry the state.
-function buildMessages(config, history, userMessage, pageElements, pageText, clientId) {
-  const messages = [{ role: "system", content: buildSystemPrompt(config, clientId) }];
+async function buildMessages(config, history, userMessage, pageElements, pageText, clientId) {
+  const messages = [{ role: "system", content: await buildSystemPrompt(config, clientId) }];
   for (const m of Array.isArray(history) ? history.slice(-12) : []) {
     if (!m || typeof m.content !== "string" || !m.content.trim()) continue;
     if (m.role !== "user" && m.role !== "assistant") continue;
@@ -523,10 +575,10 @@ app.post("/scrape", async (req, res) => {
 
 // Poll the status of a client's scrape (state: idle | running | done | error)
 // plus info about the currently-saved sitemap.
-app.get("/scrape/status", (req, res) => {
+app.get("/scrape/status", async (req, res) => {
   const clientId = req.query.clientId || "";
   if (!clientId) return res.status(400).json({ error: "clientId is required" });
-  res.json(scrapeStatus(clientId));
+  res.json(await scrapeStatus(clientId));
 });
 
 // ---------------------------------------------------------------------------
@@ -637,7 +689,7 @@ app.post("/chat", async (req, res) => {
       tools: [BROWSER_ACTION_TOOL],
       tool_choice: "auto",
       parallel_tool_calls: false, // one action per response — the widget acts one step at a time
-      messages: buildMessages(config, history, message, pageElements, pageText, clientId),
+      messages: await buildMessages(config, history, message, pageElements, pageText, clientId),
     });
 
     const choice = completion.choices[0];
@@ -695,11 +747,18 @@ app.post("/chat", async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
-  console.log(`\n🧭  NaviNate backend running on http://localhost:${PORT}`);
-  console.log(`    model:   ${MODEL}`);
-  console.log(`    base44:  ${BASE44_URL || "(none — using built-in defaults)"}`);
-  console.log(`    voice:   ${voiceConfigured() ? `ElevenLabs (${voiceDefaults.ttsModel})` : "(off — set ELEVENLABS_API_KEY)"}`);
-  console.log(`\n    Expose it with:  ngrok http ${PORT}`);
-  console.log(`    Then embed:      <script src="https://<your-ngrok>/widget.js?clientId=CLIENT_ID"></script>\n`);
-});
+// Vercel imports `app` as a request handler (see /api/index.js) and never calls
+// listen() itself — it manages the socket. Everywhere else (local dev, Render,
+// a VM) this is what actually starts the server.
+if (!process.env.VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`\n🧭  NaviNate backend running on http://localhost:${PORT}`);
+    console.log(`    model:   ${MODEL}`);
+    console.log(`    base44:  ${BASE44_URL || "(none — using built-in defaults)"}`);
+    console.log(`    voice:   ${voiceConfigured() ? `ElevenLabs (${voiceDefaults.ttsModel})` : "(off — set ELEVENLABS_API_KEY)"}`);
+    console.log(`\n    Expose it with:  ngrok http ${PORT}`);
+    console.log(`    Then embed:      <script src="https://<your-ngrok>/widget.js?clientId=CLIENT_ID"></script>\n`);
+  });
+}
+
+export default app;

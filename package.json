@@ -1,0 +1,21 @@
+{
+  "name": "navinate",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Vercel build root — installs every dependency server/server.js needs at runtime (including scraper/crawl.js, which it dynamically imports) so a single npm install covers the whole deployed function. Local dev still runs from server/ and scraper/ with their own package.json/node_modules; this file only matters for Vercel.",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@sparticuz/chromium": "^131.0.1",
+    "@upstash/redis": "^1.34.3",
+    "@vercel/functions": "^1.6.0",
+    "cheerio": "^1.0.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "openai": "^4.77.0",
+    "puppeteer-core": "^23.0.0"
+  }
+}
