@@ -1,8 +1,8 @@
 {
   "functions": {
     "api/index.js": {
-      "memory": 3009,
-      "maxDuration": 300,
+      "memory": 2048,
+      "maxDuration": 60,
       "includeFiles": "{server/public/**,widget/**,scraper/*.js}"
     }
   },
